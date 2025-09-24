@@ -1,0 +1,1109 @@
+// USBFlashHub.ino
+// Target Board: ESP32-S2 Mini (Wemos S2 Mini or similar)
+// Purpose: USB hub control and microcontroller programming interface
+// Features: Static port numbering, simplified pin control, LED management
+// Controls the USB i2c hub(s) from Jim Heaney (https://github.com/JimHeaney/i2c-usb-hub)
+//
+// ============================================
+// COMMAND FORMAT REFERENCE
+// ============================================
+// Port Control:
+//   {"cmd":"port","port":1,"power":"500mA"}    // Set power level (off/100mA/500mA)
+//   {"cmd":"port","port":5,"power":"off"}      // Turn off port
+//
+// Hub Control:
+//   {"cmd":"hub","hub":1,"state":255}          // Set raw hub state (8-bit value)
+//   {"cmd":"hub","hub":1}                      // Query hub state
+//   {"cmd":"alloff"}                            // Emergency stop all ports
+//
+// Pin Control (Direct HIGH/LOW):
+//   {"cmd":"boot","state":true}                // Boot pin HIGH
+//   {"cmd":"boot","state":false}               // Boot pin LOW
+//   {"cmd":"reset","state":true}               // Assert reset (pin goes LOW)
+//   {"cmd":"reset","state":false}              // Release reset (pin goes HIGH)
+//   {"cmd":"reset","pulse":100}                // Pulse reset LOW for 100ms then back HIGH
+//
+// LED Control:
+//   {"cmd":"led","led":"status","action":"on"}      // on/off/blink
+//   {"cmd":"led","led":"activity","action":"flash"} // flash/on/off
+//   {"cmd":"led","led":"error"}                     // Error pattern
+//
+// Status:
+//   {"cmd":"status"}                            // Full system status
+//   {"cmd":"ping"}                              // Connectivity check
+//   {"cmd":"help"}                              // Command reference
+//   {"cmd":"log"}                               // Get activity log (last 100 events)
+//
+// Configuration:
+//   {"cmd":"config","wifi":{"ssid":"MyNetwork","pass":"password"}}  // Set WiFi
+//   {"cmd":"config","wifi":{"enable":false}}                        // Disable WiFi
+//   {"cmd":"config","mdns":"usbhub"}                                // Set mDNS name
+//   {"cmd":"config"}                                                 // Get config
+//
+// Port Numbering:
+//   Hub 1 (0x44): Ports 1-4
+//   Hub 2 (0x45): Ports 5-8
+//   Hub 3 (0x46): Ports 9-12
+//   Hub 4 (0x47): Ports 13-16
+//
+// ============================================
+// RESPONSE FORMATS
+// ============================================
+// Success Response:
+//   {"status":"ok","msg":"Description of action"}
+//   {"status":"ok","port":1,"power":"500mA"}
+//
+// Error Response:
+//   {"status":"error","msg":"Error description","detail":"Optional details"}
+//
+// Status Response:
+//   {
+//     "status":"ok",
+//     "device":"USBFlashHub",
+//     "version":"2.0",
+//     "uptime":12345,
+//     "commands":10,
+//     "pins":{"boot":"LOW","reset":"released"},
+//     "hubs":[
+//       {
+//         "num":1,"addr":68,"state":255,
+//         "ports":[
+//           {"num":1,"power":"500mA"},
+//           {"num":2,"power":"off"},
+//           {"num":3,"power":"100mA"},
+//           {"num":4,"power":"500mA"}
+//         ]
+//       }
+//     ]
+//   }
+//
+// SERIAL PORT: 115200 baud, 8N1
+// ============================================
+
+#include <Wire.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <Preferences.h>
+#include <time.h>
+#include <esp_task_wdt.h>
+
+// ============================================
+// ESP32-S2 Mini Pin Assignments
+// ============================================
+// I2C for USB Hub control
+#define I2C_SDA       33  // Default SDA on S2 Mini
+#define I2C_SCL       35  // Default SCL on S2 Mini
+
+// Programming control pins
+#define BOOT_PIN      11  // BOOT control (HIGH/LOW meaning varies by target)
+#define RESET_PIN     12  // RESET control (active LOW)
+
+// Status indicators
+#define STATUS_LED    15  // System status LED
+#define ACTIVITY_LED  13  // Activity indicator LED
+
+// Emergency stop button
+#define EMERGENCY_BTN 0   // BOOT button as emergency stop
+
+// NTP Configuration
+#define NTP_SERVER "pool.ntp.org"
+#define GMT_OFFSET_SEC 0
+#define DAYLIGHT_OFFSET_SEC 0
+
+// Watchdog Configuration
+#define WDT_TIMEOUT 10  // 10 seconds watchdog timeout
+
+// ============================================
+// USB HUB CONFIGURATION
+// ============================================
+// Hardcoded hub addresses for consistent port numbering
+// Port numbering: Hub 1 = ports 1-4, Hub 2 = ports 5-8, etc.
+#define MAX_HUBS      4   // Configure based on your setup
+const uint8_t HUB_ADDRESSES[MAX_HUBS] = {
+  0x44,  // Hub 1: ports 1-4
+  0x45,  // Hub 2: ports 5-8
+  0x46,  // Hub 3: ports 9-12
+  0x47   // Hub 4: ports 13-16
+};
+
+// USB Power levels per USB spec
+// Bit patterns for power control:
+// Bits [1:0] control power level:
+#define POWER_OFF     0x00  // Port disabled
+#define POWER_100MA   0x01  // USB 2.0 low power (100mA)
+#define POWER_500MA   0x03  // USB 2.0 high power (500mA)
+#define POWER_DEFAULT POWER_500MA
+
+// ============================================
+// HUB CONTROLLER CLASS
+// ============================================
+class HubController {
+private:
+  TwoWire* wire;
+  uint8_t hubStates[MAX_HUBS];
+  uint8_t connectedHubs[MAX_HUBS];  // Track which hubs are actually connected
+  uint8_t numConnected;
+  uint32_t lastActivity;
+
+public:
+  HubController(TwoWire* i2c) : wire(i2c), lastActivity(0), numConnected(0) {
+    memset(hubStates, 0, sizeof(hubStates));
+    memset(connectedHubs, 0, sizeof(connectedHubs));
+  }
+
+  bool begin() {
+    numConnected = 0;
+    Serial.println(F("Scanning for USB hubs..."));
+
+    for (uint8_t i = 0; i < MAX_HUBS; i++) {
+      wire->beginTransmission(HUB_ADDRESSES[i]);
+      wire->write(0x00);  // All ports off initially
+      uint8_t error = wire->endTransmission();
+
+      if (error == 0) {
+        connectedHubs[i] = 1;
+        numConnected++;
+        Serial.print(F("  Hub "));
+        Serial.print(i + 1);
+        Serial.print(F(" at 0x"));
+        Serial.print(HUB_ADDRESSES[i], HEX);
+        Serial.print(F(" (ports "));
+        Serial.print(i * 4 + 1);
+        Serial.print(F("-"));
+        Serial.print(i * 4 + 4);
+        Serial.println(F(")"));
+      }
+    }
+
+    Serial.print(F("Found "));
+    Serial.print(numConnected);
+    Serial.print(F(" of "));
+    Serial.print(MAX_HUBS);
+    Serial.println(F(" configured hubs"));
+
+    return numConnected > 0;
+  }
+
+  // Set port by absolute port number (1-16)
+  bool setPortByNumber(uint8_t portNum, uint8_t powerLevel) {
+    if (portNum < 1 || portNum > (MAX_HUBS * 4)) return false;
+
+    // Calculate hub and port from absolute port number
+    uint8_t hubIndex = (portNum - 1) / 4;
+    uint8_t portIndex = (portNum - 1) % 4;
+
+    if (!connectedHubs[hubIndex]) {
+      Serial.print(F("Hub "));
+      Serial.print(hubIndex + 1);
+      Serial.println(F(" not connected"));
+      return false;
+    }
+
+    // Update port state with power level (2 bits per port)
+    uint8_t portMask = 0x03 << (portIndex * 2);
+    uint8_t portValue = (powerLevel & 0x03) << (portIndex * 2);
+
+    hubStates[hubIndex] = (hubStates[hubIndex] & ~portMask) | portValue;
+
+    return updateHub(hubIndex);
+  }
+
+  // Set all ports on a hub
+  bool setHub(uint8_t hubNum, uint8_t state) {
+    if (hubNum < 1 || hubNum > MAX_HUBS) return false;
+    uint8_t hubIndex = hubNum - 1;
+
+    if (!connectedHubs[hubIndex]) {
+      Serial.print(F("Hub "));
+      Serial.print(hubNum);
+      Serial.println(F(" not connected"));
+      return false;
+    }
+
+    hubStates[hubIndex] = state;
+    return updateHub(hubIndex);
+  }
+
+  // Turn all ports off
+  void allOff() {
+    for (uint8_t i = 0; i < MAX_HUBS; i++) {
+      if (connectedHubs[i]) {
+        hubStates[i] = 0x00;
+        updateHub(i);
+      }
+    }
+  }
+
+  // Get hub state
+  uint8_t getHubState(uint8_t hubNum) {
+    if (hubNum < 1 || hubNum > MAX_HUBS) return 0;
+    return hubStates[hubNum - 1];
+  }
+
+  // Get port power level
+  uint8_t getPortPower(uint8_t portNum) {
+    if (portNum < 1 || portNum > (MAX_HUBS * 4)) return 0;
+
+    uint8_t hubIndex = (portNum - 1) / 4;
+    uint8_t portIndex = (portNum - 1) % 4;
+
+    return (hubStates[hubIndex] >> (portIndex * 2)) & 0x03;
+  }
+
+  uint32_t getLastActivity() { return lastActivity; }
+  uint8_t getNumConnected() { return numConnected; }
+
+  // Get status of all ports
+  void getStatus(JsonDocument& status) {
+    JsonArray hubs = status.createNestedArray("hubs");
+
+    for (uint8_t i = 0; i < MAX_HUBS; i++) {
+      if (connectedHubs[i]) {
+        JsonObject hub = hubs.createNestedObject();
+        hub["num"] = i + 1;
+        hub["addr"] = HUB_ADDRESSES[i];
+        hub["state"] = hubStates[i];
+
+        JsonArray ports = hub.createNestedArray("ports");
+        for (uint8_t p = 0; p < 4; p++) {
+          uint8_t power = (hubStates[i] >> (p * 2)) & 0x03;
+          JsonObject port = ports.createNestedObject();
+          port["num"] = i * 4 + p + 1;
+          port["power"] = getPowerString(power);
+        }
+      }
+    }
+  }
+
+private:
+  bool updateHub(uint8_t hubIndex) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return false;
+
+    wire->beginTransmission(HUB_ADDRESSES[hubIndex]);
+    wire->write(hubStates[hubIndex]);
+    uint8_t error = wire->endTransmission();
+
+    if (error == 0) {
+      lastActivity = millis();
+      return true;
+    }
+    return false;
+  }
+
+  const char* getPowerString(uint8_t level) {
+    switch(level) {
+      case POWER_OFF: return "off";
+      case POWER_100MA: return "100mA";
+      case POWER_500MA: return "500mA";
+      default: return "unknown";
+    }
+  }
+};
+
+// ============================================
+// CONFIGURATION MANAGER CLASS
+// ============================================
+class ConfigManager {
+private:
+  Preferences prefs;
+  struct {
+    char wifiSSID[32];
+    char wifiPass[64];
+    char mdnsName[32];
+    bool wifiEnabled;
+  } config;
+
+public:
+  ConfigManager() {
+    strcpy(config.mdnsName, "usbhub");  // Default
+    config.wifiEnabled = false;
+  }
+
+  void begin() {
+    prefs.begin("usbflashhub", false);
+    loadConfig();
+  }
+
+  void loadConfig() {
+    prefs.getString("ssid", config.wifiSSID, sizeof(config.wifiSSID));
+    prefs.getString("pass", config.wifiPass, sizeof(config.wifiPass));
+    prefs.getString("mdns", config.mdnsName, sizeof(config.mdnsName));
+    config.wifiEnabled = prefs.getBool("wifi_en", false);
+
+    if (strlen(config.mdnsName) == 0) {
+      strcpy(config.mdnsName, "usbhub");
+    }
+  }
+
+  void saveConfig() {
+    prefs.putString("ssid", config.wifiSSID);
+    prefs.putString("pass", config.wifiPass);
+    prefs.putString("mdns", config.mdnsName);
+    prefs.putBool("wifi_en", config.wifiEnabled);
+  }
+
+  void setWiFi(const char* ssid, const char* pass, bool enable) {
+    if (ssid) strlcpy(config.wifiSSID, ssid, sizeof(config.wifiSSID));
+    if (pass) strlcpy(config.wifiPass, pass, sizeof(config.wifiPass));
+    config.wifiEnabled = enable;
+    saveConfig();
+  }
+
+  void setMDNS(const char* name) {
+    strlcpy(config.mdnsName, name, sizeof(config.mdnsName));
+    saveConfig();
+  }
+
+  const char* getSSID() { return config.wifiSSID; }
+  const char* getPass() { return config.wifiPass; }
+  const char* getMDNS() { return config.mdnsName; }
+  bool isWiFiEnabled() { return config.wifiEnabled; }
+
+  void getConfig(JsonDocument& doc) {
+    doc["wifi"]["ssid"] = config.wifiSSID;
+    doc["wifi"]["enabled"] = config.wifiEnabled;
+    doc["mdns"] = config.mdnsName;
+  }
+};
+
+// ============================================
+// ACTIVITY LOGGER CLASS
+// ============================================
+class ActivityLogger {
+private:
+  static const uint16_t MAX_ENTRIES = 100;
+
+  struct LogEntry {
+    time_t timestamp;
+    char action[24];
+    uint8_t target;
+    char detail[32];
+  };
+
+  LogEntry* entries;
+  uint16_t writeIndex;
+  uint16_t count;
+  bool usePSRAM;
+
+public:
+  ActivityLogger() : writeIndex(0), count(0), usePSRAM(false), entries(nullptr) {}
+
+  void begin() {
+    // Check for PSRAM and allocate buffer
+    if (psramFound()) {
+      entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
+      if (entries) {
+        usePSRAM = true;
+        Serial.println(F("Activity log using PSRAM"));
+      }
+    }
+
+    if (!entries) {
+      entries = new LogEntry[MAX_ENTRIES];
+      Serial.println(F("Activity log using regular RAM"));
+    }
+
+    memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
+  }
+
+  void log(const char* action, uint8_t target = 0, const char* detail = nullptr) {
+    if (!entries) return;
+
+    LogEntry& entry = entries[writeIndex];
+    entry.timestamp = time(nullptr);
+    strlcpy(entry.action, action, sizeof(entry.action));
+    entry.target = target;
+    if (detail) {
+      strlcpy(entry.detail, detail, sizeof(entry.detail));
+    } else {
+      entry.detail[0] = 0;
+    }
+
+    writeIndex = (writeIndex + 1) % MAX_ENTRIES;
+    if (count < MAX_ENTRIES) count++;
+  }
+
+  void getLog(JsonDocument& doc) {
+    JsonArray logs = doc.createNestedArray("log");
+
+    uint16_t start = (count < MAX_ENTRIES) ? 0 : writeIndex;
+    for (uint16_t i = 0; i < count; i++) {
+      // Feed watchdog every 10 entries during log serialization
+      if (i % 10 == 0) {
+        esp_task_wdt_reset();
+      }
+
+      uint16_t idx = (start + i) % MAX_ENTRIES;
+      JsonObject entry = logs.createNestedObject();
+
+      if (entries[idx].timestamp > 0) {
+        struct tm timeinfo;
+        localtime_r(&entries[idx].timestamp, &timeinfo);
+        char timeStr[32];
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        entry["time"] = timeStr;
+      } else {
+        entry["time"] = entries[idx].timestamp;  // Fallback to millis if no NTP
+      }
+
+      entry["action"] = entries[idx].action;
+      if (entries[idx].target > 0) entry["target"] = entries[idx].target;
+      if (strlen(entries[idx].detail) > 0) entry["detail"] = entries[idx].detail;
+    }
+
+    doc["count"] = count;
+    doc["psram"] = usePSRAM;
+  }
+};
+
+// ============================================
+// WIFI MANAGER CLASS
+// ============================================
+class WiFiManager {
+private:
+  ConfigManager* config;
+  bool connected;
+  uint32_t lastReconnect;
+  bool ntpSynced;
+
+public:
+  WiFiManager(ConfigManager* cfg) : config(cfg), connected(false), lastReconnect(0), ntpSynced(false) {}
+
+  void begin() {
+    if (!config->isWiFiEnabled()) {
+      Serial.println(F("WiFi disabled in config"));
+      return;
+    }
+
+    const char* ssid = config->getSSID();
+    const char* pass = config->getPass();
+
+    if (strlen(ssid) == 0) {
+      Serial.println(F("No WiFi credentials configured"));
+      return;
+    }
+
+    Serial.print(F("Connecting to WiFi: "));
+    Serial.println(ssid);
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, pass);
+
+    uint8_t attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts++ < 20) {
+      esp_task_wdt_reset();  // Feed watchdog during WiFi connection
+      delay(500);
+      Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      connected = true;
+      Serial.print(F("\nConnected! IP: "));
+      Serial.println(WiFi.localIP());
+
+      // Start mDNS
+      if (MDNS.begin(config->getMDNS())) {
+        Serial.print(F("mDNS started: "));
+        Serial.print(config->getMDNS());
+        Serial.println(F(".local"));
+        MDNS.addService("http", "tcp", 80);
+      }
+
+      // Sync NTP
+      configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+      Serial.println(F("NTP time sync started"));
+      ntpSynced = true;
+    } else {
+      Serial.println(F("\nWiFi connection failed"));
+    }
+  }
+
+  void loop() {
+    if (!config->isWiFiEnabled()) return;
+
+    // Auto-reconnect
+    if (!connected && millis() - lastReconnect > 30000) {
+      lastReconnect = millis();
+      esp_task_wdt_reset();  // Feed watchdog before reconnect attempt
+      begin();
+      esp_task_wdt_reset();  // Feed watchdog after reconnect attempt
+    }
+  }
+
+  bool isConnected() { return connected; }
+  String getIP() { return WiFi.localIP().toString(); }
+};
+
+// ============================================
+// LED CONTROLLER CLASS
+// ============================================
+class LEDController {
+private:
+  uint8_t statusPin;
+  uint8_t activityPin;
+  uint32_t lastBlink;
+  bool statusState;
+
+public:
+  LEDController(uint8_t status, uint8_t activity)
+    : statusPin(status), activityPin(activity), lastBlink(0), statusState(false) {}
+
+  void begin() {
+    pinMode(statusPin, OUTPUT);
+    pinMode(activityPin, OUTPUT);
+    setStatus(true);  // Status on at startup
+    setActivity(false);
+  }
+
+  void setStatus(bool on) {
+    digitalWrite(statusPin, on ? HIGH : LOW);
+    statusState = on;
+  }
+
+  void setActivity(bool on) {
+    digitalWrite(activityPin, on ? HIGH : LOW);
+  }
+
+  void flashActivity(uint32_t ms = 50) {
+    setActivity(true);
+    delay(ms);
+    setActivity(false);
+  }
+
+  void blinkStatus(uint32_t interval = 1000) {
+    if (millis() - lastBlink > interval) {
+      statusState = !statusState;
+      setStatus(statusState);
+      lastBlink = millis();
+    }
+  }
+
+  void errorPattern() {
+    for (int i = 0; i < 3; i++) {
+      setStatus(true);
+      setActivity(true);
+      delay(100);
+      setStatus(false);
+      setActivity(false);
+      delay(100);
+    }
+  }
+};
+
+// ============================================
+// PIN CONTROLLER CLASS
+// ============================================
+class PinController {
+private:
+  uint8_t bootPin;
+  uint8_t resetPin;
+  bool bootState;
+  bool resetState;
+
+public:
+  PinController(uint8_t boot, uint8_t reset)
+    : bootPin(boot), resetPin(reset), bootState(false), resetState(false) {}
+
+  void begin() {
+    pinMode(bootPin, OUTPUT);
+    pinMode(resetPin, OUTPUT);
+
+    // Safe defaults
+    setBoot(false);   // Boot pin LOW
+    setReset(false);  // Reset not asserted (HIGH)
+
+    Serial.println(F("Pin controller initialized"));
+  }
+
+  // Direct pin control - just set HIGH or LOW
+  void setBoot(bool high) {
+    digitalWrite(bootPin, high ? HIGH : LOW);
+    bootState = high;
+  }
+
+  // Reset is active LOW - but we expose it as logical state
+  void setReset(bool asserted) {
+    digitalWrite(resetPin, asserted ? LOW : HIGH);
+    resetState = asserted;
+  }
+
+  void pulseReset(uint32_t ms = 100) {
+    setReset(true);   // Assert reset (LOW)
+    // For longer pulses, feed watchdog during delay
+    if (ms > 1000) {
+      uint32_t chunks = ms / 500;
+      uint32_t remainder = ms % 500;
+      for (uint32_t i = 0; i < chunks; i++) {
+        delay(500);
+        esp_task_wdt_reset();
+      }
+      if (remainder > 0) delay(remainder);
+    } else {
+      delay(ms);
+    }
+    setReset(false);  // Release reset (HIGH)
+  }
+
+  bool getBootState() { return bootState; }
+  bool getResetState() { return resetState; }
+};
+
+// ============================================
+// COMMAND PROCESSOR
+// ============================================
+class CommandProcessor {
+private:
+  HubController* hub;
+  PinController* pins;
+  LEDController* leds;
+  ConfigManager* config;
+  ActivityLogger* logger;
+  WiFiManager* network;
+  StaticJsonDocument<1024> response;  // Increased for log output
+  uint32_t commandCount;
+
+public:
+  CommandProcessor(HubController* h, PinController* p, LEDController* l,
+                   ConfigManager* c, ActivityLogger* log, WiFiManager* n)
+    : hub(h), pins(p), leds(l), config(c), logger(log), network(n), commandCount(0) {}
+
+  void processCommand(const String& cmdStr) {
+    StaticJsonDocument<256> cmd;
+    DeserializationError error = deserializeJson(cmd, cmdStr);
+
+    if (error) {
+      sendError("JSON parse error", error.c_str());
+      return;
+    }
+
+    commandCount++;
+    leds->flashActivity();
+
+    const char* action = cmd["cmd"];
+    if (!action) {
+      sendError("No command specified");
+      return;
+    }
+
+    // Log the command
+    logger->log(action);
+
+    // Port control commands
+    if (strcmp(action, "port") == 0) {
+      handlePortCommand(cmd);
+    }
+    else if (strcmp(action, "hub") == 0) {
+      handleHubCommand(cmd);
+    }
+    else if (strcmp(action, "alloff") == 0) {
+      hub->allOff();
+      pins->setReset(true);
+      delay(100);
+      pins->setReset(false);
+      logger->log("emergency_stop");
+      sendOK("Emergency stop - all ports off");
+    }
+    // Pin control commands
+    else if (strcmp(action, "boot") == 0) {
+      bool state = cmd["state"];
+      pins->setBoot(state);
+      logger->log("boot_pin", 0, state ? "HIGH" : "LOW");
+      sendOK(state ? "Boot pin HIGH" : "Boot pin LOW");
+    }
+    else if (strcmp(action, "reset") == 0) {
+      if (cmd.containsKey("pulse")) {
+        uint32_t ms = cmd["pulse"] | 100;
+        pins->pulseReset(ms);
+        logger->log("reset_pulse", ms);
+        sendOK("Reset pulsed");
+      } else {
+        bool state = cmd["state"];
+        pins->setReset(state);
+        logger->log("reset_pin", 0, state ? "asserted" : "released");
+        sendOK(state ? "Reset asserted (LOW)" : "Reset released (HIGH)");
+      }
+    }
+    // LED control commands
+    else if (strcmp(action, "led") == 0) {
+      handleLEDCommand(cmd);
+    }
+    // Configuration commands
+    else if (strcmp(action, "config") == 0) {
+      handleConfigCommand(cmd);
+    }
+    // Activity log
+    else if (strcmp(action, "log") == 0) {
+      sendLog();
+    }
+    // Status commands
+    else if (strcmp(action, "status") == 0) {
+      sendStatus();
+    }
+    else if (strcmp(action, "ping") == 0) {
+      sendOK("pong");
+    }
+    else if (strcmp(action, "help") == 0) {
+      printHelp();
+    }
+    else {
+      sendError("Unknown command", action);
+    }
+  }
+
+private:
+  void handlePortCommand(JsonDocument& cmd) {
+    uint8_t portNum = cmd["port"] | 0;
+
+    if (portNum == 0) {
+      sendError("Missing port number");
+      return;
+    }
+
+    // Check for power level
+    const char* powerStr = cmd["power"] | "default";
+    uint8_t powerLevel = POWER_DEFAULT;
+
+    if (strcmp(powerStr, "off") == 0) {
+      powerLevel = POWER_OFF;
+    } else if (strcmp(powerStr, "100mA") == 0 || strcmp(powerStr, "low") == 0) {
+      powerLevel = POWER_100MA;
+    } else if (strcmp(powerStr, "500mA") == 0 || strcmp(powerStr, "high") == 0) {
+      powerLevel = POWER_500MA;
+    }
+
+    if (hub->setPortByNumber(portNum, powerLevel)) {
+      logger->log("port_set", portNum, powerStr);
+      response.clear();
+      response["status"] = "ok";
+      response["port"] = portNum;
+      response["power"] = powerStr;
+      serializeJson(response, Serial);
+      Serial.println();
+    } else {
+      sendError("Failed to set port");
+    }
+  }
+
+  void handleHubCommand(JsonDocument& cmd) {
+    uint8_t hubNum = cmd["hub"] | 0;
+
+    if (hubNum == 0) {
+      sendError("Missing hub number");
+      return;
+    }
+
+    if (cmd.containsKey("state")) {
+      uint8_t state = cmd["state"];
+      if (hub->setHub(hubNum, state)) {
+        logger->log("hub_set", hubNum);
+        sendOK("Hub state updated");
+      } else {
+        sendError("Failed to set hub state");
+      }
+    } else {
+      // Query hub state
+      uint8_t state = hub->getHubState(hubNum);
+      response.clear();
+      response["status"] = "ok";
+      response["hub"] = hubNum;
+      response["state"] = state;
+      serializeJson(response, Serial);
+      Serial.println();
+    }
+  }
+
+  void handleLEDCommand(JsonDocument& cmd) {
+    const char* led = cmd["led"] | "status";
+    const char* action = cmd["action"] | "on";
+
+    if (strcmp(led, "status") == 0) {
+      if (strcmp(action, "on") == 0) {
+        leds->setStatus(true);
+        sendOK("Status LED on");
+      } else if (strcmp(action, "off") == 0) {
+        leds->setStatus(false);
+        sendOK("Status LED off");
+      } else if (strcmp(action, "blink") == 0) {
+        leds->blinkStatus();
+        sendOK("Status LED blinking");
+      }
+    } else if (strcmp(led, "activity") == 0) {
+      if (strcmp(action, "flash") == 0) {
+        leds->flashActivity();
+        sendOK("Activity LED flashed");
+      } else if (strcmp(action, "on") == 0) {
+        leds->setActivity(true);
+        sendOK("Activity LED on");
+      } else if (strcmp(action, "off") == 0) {
+        leds->setActivity(false);
+        sendOK("Activity LED off");
+      }
+    } else if (strcmp(led, "error") == 0) {
+      leds->errorPattern();
+      sendOK("Error pattern displayed");
+    }
+  }
+
+  void handleConfigCommand(JsonDocument& cmd) {
+    if (cmd.containsKey("wifi")) {
+      JsonObject wifi = cmd["wifi"];
+      if (wifi.containsKey("ssid") && wifi.containsKey("pass")) {
+        const char* ssid = wifi["ssid"];
+        const char* pass = wifi["pass"];
+        bool enable = wifi["enable"] | true;
+        config->setWiFi(ssid, pass, enable);
+        logger->log("wifi_config", 0, ssid);
+        sendOK("WiFi configuration saved. Restart to apply.");
+      } else if (wifi.containsKey("enable")) {
+        bool enable = wifi["enable"];
+        config->setWiFi(nullptr, nullptr, enable);
+        logger->log("wifi_toggle", enable);
+        sendOK(enable ? "WiFi enabled" : "WiFi disabled");
+      }
+    } else if (cmd.containsKey("mdns")) {
+      const char* name = cmd["mdns"];
+      config->setMDNS(name);
+      logger->log("mdns_config", 0, name);
+      sendOK("mDNS name saved. Restart to apply.");
+    } else {
+      // Return current config
+      response.clear();
+      response["status"] = "ok";
+      config->getConfig(response);
+      if (network->isConnected()) {
+        response["ip"] = network->getIP();
+      }
+      serializeJson(response, Serial);
+      Serial.println();
+    }
+  }
+
+  void sendLog() {
+    response.clear();
+    response["status"] = "ok";
+    logger->getLog(response);
+    serializeJson(response, Serial);
+    Serial.println();
+  }
+
+public:
+  void sendStatus() {
+    response.clear();
+    response["status"] = "ok";
+    response["device"] = "USBFlashHub";
+    response["version"] = "2.0";
+    response["uptime"] = millis();
+    response["commands"] = commandCount;
+
+    JsonObject pinStates = response.createNestedObject("pins");
+    pinStates["boot"] = pins->getBootState() ? "HIGH" : "LOW";
+    pinStates["reset"] = pins->getResetState() ? "asserted" : "released";
+
+    hub->getStatus(response);
+
+    // Add network status
+    if (config->isWiFiEnabled()) {
+      JsonObject net = response.createNestedObject("network");
+      net["enabled"] = true;
+      net["connected"] = network->isConnected();
+      if (network->isConnected()) {
+        net["ip"] = network->getIP();
+        net["mdns"] = String(config->getMDNS()) + ".local";
+      }
+    }
+
+    serializeJson(response, Serial);
+    Serial.println();
+  }
+
+  void sendOK(const char* msg) {
+    response.clear();
+    response["status"] = "ok";
+    response["msg"] = msg;
+    serializeJson(response, Serial);
+    Serial.println();
+  }
+
+  void sendError(const char* msg, const char* detail = nullptr) {
+    response.clear();
+    response["status"] = "error";
+    response["msg"] = msg;
+    if (detail) response["detail"] = detail;
+    serializeJson(response, Serial);
+    Serial.println();
+    leds->errorPattern();
+  }
+
+  void printHelp() {
+    Serial.println(F("\n=== USBFlashHub Commands ==="));
+    Serial.println(F("\nPort Control:"));
+    Serial.println(F("  {\"cmd\":\"port\",\"port\":1,\"power\":\"500mA\"}"));
+    Serial.println(F("  {\"cmd\":\"port\",\"port\":5,\"power\":\"off\"}"));
+    Serial.println(F("  Power levels: off, 100mA, 500mA"));
+    Serial.println(F("\nHub Control:"));
+    Serial.println(F("  {\"cmd\":\"hub\",\"hub\":1,\"state\":255}"));
+    Serial.println(F("  {\"cmd\":\"alloff\"}"));
+    Serial.println(F("\nPin Control:"));
+    Serial.println(F("  {\"cmd\":\"boot\",\"state\":true}   (HIGH)"));
+    Serial.println(F("  {\"cmd\":\"boot\",\"state\":false}  (LOW)"));
+    Serial.println(F("  {\"cmd\":\"reset\",\"state\":true}  (asserted/LOW)"));
+    Serial.println(F("  {\"cmd\":\"reset\",\"state\":false} (released/HIGH)"));
+    Serial.println(F("  {\"cmd\":\"reset\",\"pulse\":100}  (LOW 100ms then HIGH)"));
+    Serial.println(F("\nLED Control:"));
+    Serial.println(F("  {\"cmd\":\"led\",\"led\":\"status\",\"action\":\"on\"}"));
+    Serial.println(F("  {\"cmd\":\"led\",\"led\":\"activity\",\"action\":\"flash\"}"));
+    Serial.println(F("  {\"cmd\":\"led\",\"led\":\"error\"}"));
+    Serial.println(F("\nConfiguration:"));
+    Serial.println(F("  {\"cmd\":\"config\",\"wifi\":{\"ssid\":\"MyNet\",\"pass\":\"pass\"}}"));
+    Serial.println(F("  {\"cmd\":\"config\",\"wifi\":{\"enable\":false}}"));
+    Serial.println(F("  {\"cmd\":\"config\",\"mdns\":\"usbhub\"}"));
+    Serial.println(F("  {\"cmd\":\"config\"}  (get current config)"));
+    Serial.println(F("\nStatus:"));
+    Serial.println(F("  {\"cmd\":\"status\"}"));
+    Serial.println(F("  {\"cmd\":\"log\"}  (activity log)"));
+    Serial.println(F("  {\"cmd\":\"ping\"}"));
+    Serial.println(F("  {\"cmd\":\"help\"}"));
+    Serial.println(F("\nPort Numbering:"));
+    for (uint8_t i = 0; i < MAX_HUBS; i++) {
+      Serial.print(F("  Hub "));
+      Serial.print(i + 1);
+      Serial.print(F(": ports "));
+      Serial.print(i * 4 + 1);
+      Serial.print(F("-"));
+      Serial.println(i * 4 + 4);
+    }
+    Serial.println(F("==============================\n"));
+  }
+};
+
+// ============================================
+// MAIN PROGRAM
+// ============================================
+// Wire1 is predefined in ESP32 library
+HubController hubController(&Wire1);
+PinController pinController(BOOT_PIN, RESET_PIN);
+LEDController ledController(STATUS_LED, ACTIVITY_LED);
+ConfigManager configManager;
+ActivityLogger activityLogger;
+WiFiManager wifiManager(&configManager);
+CommandProcessor processor(&hubController, &pinController, &ledController,
+                          &configManager, &activityLogger, &wifiManager);
+
+// Emergency stop handler
+volatile bool emergencyStopFlag = false;
+
+void IRAM_ATTR emergencyStopISR() {
+  emergencyStopFlag = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Wait for serial or timeout
+  uint32_t start = millis();
+  while (!Serial && millis() - start < 3000);
+
+  Serial.println(F("\n====================================="));
+  Serial.println(F("        USBFlashHub v2.0"));
+  Serial.println(F("   USB Hub & Programming Control"));
+  Serial.println(F("=====================================\n"));
+
+  // Initialize watchdog timer
+  Serial.print(F("Initializing watchdog ("));
+  Serial.print(WDT_TIMEOUT);
+  Serial.print(F("s)... "));
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);  // Add current task to WDT
+  esp_task_wdt_reset();    // Feed the watchdog
+  Serial.println(F("OK"));
+
+  // Initialize configuration first
+  configManager.begin();
+  activityLogger.begin();
+  esp_task_wdt_reset();  // Feed watchdog
+
+  // Initialize components
+  ledController.begin();
+  ledController.flashActivity();
+
+  Serial.print(F("Initializing I2C... "));
+  Wire1.begin(I2C_SDA, I2C_SCL, 100000);
+  Serial.println(F("OK"));
+
+  pinController.begin();
+
+  // Initialize network if configured
+  esp_task_wdt_reset();  // Feed watchdog before network init
+  wifiManager.begin();
+  esp_task_wdt_reset();  // Feed watchdog after network init
+
+  if (hubController.begin()) {
+    Serial.println(F("Hub controller ready"));
+    ledController.setStatus(true);
+  } else {
+    Serial.println(F("WARNING: No USB hubs found"));
+    ledController.errorPattern();
+  }
+
+  // Setup emergency stop button
+  pinMode(EMERGENCY_BTN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(EMERGENCY_BTN), emergencyStopISR, FALLING);
+  Serial.println(F("Emergency stop on GPIO0 (BOOT button)"));
+
+  Serial.println(F("\nReady for commands"));
+  Serial.println(F("Type {\"cmd\":\"help\"} for command list"));
+
+  if (configManager.isWiFiEnabled() && wifiManager.isConnected()) {
+    Serial.print(F("Web interface: http://"));
+    Serial.print(wifiManager.getIP());
+    Serial.print(F(" or http://"));
+    Serial.print(configManager.getMDNS());
+    Serial.println(F(".local"));
+  }
+  Serial.println();
+
+  activityLogger.log("system_start");
+  processor.sendStatus();
+}
+
+void loop() {
+  // Feed the watchdog
+  esp_task_wdt_reset();
+
+  // Network reconnect handler
+  wifiManager.loop();
+
+  // Check emergency stop
+  if (emergencyStopFlag) {
+    emergencyStopFlag = false;
+    Serial.println(F("\n!!! EMERGENCY STOP !!!"));
+    hubController.allOff();
+    pinController.setReset(true);
+    ledController.errorPattern();
+    delay(500);
+    pinController.setReset(false);
+  }
+
+  // Process serial commands
+  if (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line.length() > 0) {
+      processor.processCommand(line);
+    }
+  }
+
+  // Heartbeat - blink status LED every 5 seconds when idle
+  static uint32_t lastHeartbeat = 0;
+  if (millis() - lastHeartbeat > 5000) {
+    ledController.blinkStatus();
+    lastHeartbeat = millis();
+    // Watchdog is fed at top of loop, so no need here
+  }
+}

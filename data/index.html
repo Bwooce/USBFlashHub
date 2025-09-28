@@ -257,11 +257,32 @@
         .activity-log {
             max-height: 400px;
             overflow-y: auto;
+            overflow-x: hidden;
             background: #f5f5f5;
             border-radius: 4px;
             padding: 10px;
             font-family: 'Courier New', monospace;
             font-size: 12px;
+            border: 1px solid #ddd;
+        }
+
+        /* Custom scrollbar styles */
+        .activity-log::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .activity-log::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        .activity-log::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        .activity-log::-webkit-scrollbar-thumb:hover {
+            background: #555;
         }
 
         .log-entry {
@@ -360,6 +381,27 @@
         </div>
 
         <div class="panel">
+            <h2>System Status</h2>
+            <div id="systemStatus" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 10px 0;">
+                <div><b>Free Heap:</b> <span id="freeHeap">-</span></div>
+                <div><b>Min Free Heap:</b> <span id="minFreeHeap">-</span></div>
+                <div><b>CPU Freq:</b> <span id="cpuFreq">-</span> MHz</div>
+                <div><b>WiFi RSSI:</b> <span id="wifiRssi">-</span> dBm</div>
+                <div><b>Temperature:</b> <span id="temperature">-</span></div>
+                <div><b>SDK Version:</b> <span id="sdkVersion">-</span></div>
+            </div>
+            <div id="i2cStatus" style="margin-top: 15px;">
+                <h3 style="font-size: 14px; margin: 10px 0;">I2C Health</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
+                    <div><b>Total TX:</b> <span id="i2cTotal">0</span></div>
+                    <div><b>Failed:</b> <span id="i2cFailed">0</span></div>
+                    <div><b>Error Rate:</b> <span id="i2cErrorRate">0</span>%</div>
+                    <div><b>Last Success:</b> <span id="i2cLastSuccess">-</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
             <h2>Activity Log</h2>
             <div class="activity-log" id="activityLog">
                 <!-- Log entries will be added here -->
@@ -431,6 +473,9 @@
             }
             if (data.system) {
                 updateSystem(data.system);
+            }
+            if (data.i2c) {
+                updateI2CHealth(data.i2c);
             }
             if (data.pins) {
                 updatePinStates(data.pins);
@@ -571,8 +616,27 @@
         }
 
         function refreshStatus() {
-            sendCommand({ cmd: 'status' });
-            sendCommand({ cmd: 'log' });
+            // Check if WebSocket is connected, reconnect if needed
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addLog('WebSocket disconnected, reconnecting...', 'error');
+                initWebSocket();
+                // Try to refresh after reconnection
+                setTimeout(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        sendCommand({ cmd: 'status' });
+                        sendCommand({ cmd: 'log' });
+                    }
+                }, 1000);
+            } else {
+                sendCommand({ cmd: 'status' });
+                sendCommand({ cmd: 'log' });
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
         }
 
         function updateSystem(system) {
@@ -583,6 +647,57 @@
                 const hours = Math.floor(system.uptime / 3600000);
                 const minutes = Math.floor((system.uptime % 3600000) / 60000);
                 document.getElementById('uptime').textContent = `Uptime: ${hours}h ${minutes}m`;
+            }
+
+            // Update enhanced system status
+            if (system.free_heap !== undefined) {
+                document.getElementById('freeHeap').textContent = formatBytes(system.free_heap);
+            }
+            if (system.min_free_heap !== undefined) {
+                document.getElementById('minFreeHeap').textContent = formatBytes(system.min_free_heap);
+            }
+            if (system.cpu_freq !== undefined) {
+                document.getElementById('cpuFreq').textContent = system.cpu_freq;
+            }
+            if (system.wifi_rssi !== undefined) {
+                document.getElementById('wifiRssi').textContent = system.wifi_rssi;
+            }
+            if (system.temperature !== undefined) {
+                document.getElementById('temperature').textContent = system.temperature.toFixed(1) + '°C';
+            } else {
+                document.getElementById('temperature').textContent = 'N/A';
+            }
+            if (system.sdk_version !== undefined) {
+                document.getElementById('sdkVersion').textContent = system.sdk_version;
+            }
+        }
+
+        function updateI2CHealth(i2c) {
+            if (i2c.total_transactions !== undefined) {
+                document.getElementById('i2cTotal').textContent = i2c.total_transactions;
+            }
+            if (i2c.failed_transactions !== undefined) {
+                document.getElementById('i2cFailed').textContent = i2c.failed_transactions;
+            }
+            if (i2c.error_rate !== undefined) {
+                const rate = document.getElementById('i2cErrorRate');
+                rate.textContent = i2c.error_rate.toFixed(2);
+                // Color code based on error rate
+                if (i2c.error_rate > 10) {
+                    rate.style.color = '#ff6b6b';
+                } else if (i2c.error_rate > 5) {
+                    rate.style.color = '#ffa500';
+                } else {
+                    rate.style.color = '#4CAF50';
+                }
+            }
+            if (i2c.last_success_ago !== undefined) {
+                const ms = i2c.last_success_ago;
+                let timeStr;
+                if (ms < 1000) timeStr = ms + 'ms ago';
+                else if (ms < 60000) timeStr = (ms / 1000).toFixed(1) + 's ago';
+                else timeStr = (ms / 60000).toFixed(1) + 'm ago';
+                document.getElementById('i2cLastSuccess').textContent = timeStr;
             }
         }
 

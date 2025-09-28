@@ -87,6 +87,7 @@
 #include <Preferences.h>
 #include <time.h>
 #include <esp_task_wdt.h>
+#include <esp_system.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <LittleFS.h>
@@ -217,6 +218,48 @@ const uint8_t HUB_ADDRESSES[MAX_HUBS] = {
 #define POWER_DEFAULT POWER_500MA
 
 // ============================================
+// I2C HEALTH MONITORING
+// ============================================
+
+// I2C Health Monitoring
+struct I2CHealth {
+  uint32_t totalTransactions = 0;
+  uint32_t failedTransactions = 0;
+  unsigned long lastSuccessTime = 0;
+  unsigned long lastFailTime = 0;
+  float errorRate = 0.0;
+
+  void recordSuccess() {
+    totalTransactions++;
+    lastSuccessTime = millis();
+    updateErrorRate();
+  }
+
+  void recordFailure() {
+    totalTransactions++;
+    failedTransactions++;
+    lastFailTime = millis();
+    updateErrorRate();
+  }
+
+  void updateErrorRate() {
+    if (totalTransactions > 0) {
+      errorRate = (float)failedTransactions / totalTransactions * 100.0;
+    }
+  }
+
+  void reset() {
+    totalTransactions = 0;
+    failedTransactions = 0;
+    lastSuccessTime = 0;
+    lastFailTime = 0;
+    errorRate = 0.0;
+  }
+};
+
+I2CHealth i2cHealth;
+
+// ============================================
 // HUB CONTROLLER CLASS
 // ============================================
 class HubController {
@@ -314,13 +357,22 @@ public:
     wire->write(0x03);  // Configuration register address
     wire->write(0x00);  // Sets all pins as outputs
     uint8_t error = wire->endTransmission();
-    if (error != 0) return false;
+    if (error != 0) {
+      i2cHealth.recordFailure();
+      return false;
+    }
+    i2cHealth.recordSuccess();
 
     // Set Polarity Inversion Register (disable inversion)
     wire->beginTransmission(addr);
     wire->write(0x02);  // Polarity Inversion Register
     wire->write(0x00);  // Disable inversion on all pins
-    wire->endTransmission();
+    error = wire->endTransmission();
+    if (error == 0) {
+      i2cHealth.recordSuccess();
+    } else {
+      i2cHealth.recordFailure();
+    }
 
     // Set Output Control Register with initial state
     // Bit 0: Current limit (1=100mA, 0=500mA) - start with 100mA
@@ -330,7 +382,12 @@ public:
     wire->beginTransmission(addr);
     wire->write(0x01);  // Output Control Register
     wire->write(hubStates[hubIndex]);
-    wire->endTransmission();
+    error = wire->endTransmission();
+    if (error == 0) {
+      i2cHealth.recordSuccess();
+    } else {
+      i2cHealth.recordFailure();
+    }
 
     // Port 4 defaults to on for some reason, make sure it's off
     setPort(hubIndex, 3, false);  // Port 4 is index 3
@@ -492,12 +549,22 @@ public:
   void updateHubPower(uint8_t hubIndex, bool high) {
     if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
 
+    uint8_t oldState = hubStates[hubIndex];
+
     // Bit 0 controls current limit: 0 = 500mA, 1 = 100mA (inverted logic)
     if (high) {
       hubStates[hubIndex] &= ~0x01;  // Clear bit 0 for 500mA
     } else {
       hubStates[hubIndex] |= 0x01;  // Set bit 0 for 100mA
     }
+
+    Serial.print(F("Hub "));
+    Serial.print(hubIndex + 1);
+    Serial.print(F(" power change: 0x"));
+    Serial.print(oldState, HEX);
+    Serial.print(F(" -> 0x"));
+    Serial.println(hubStates[hubIndex], HEX);
+
     updateHub(hubIndex);
   }
 
@@ -511,8 +578,11 @@ private:
     uint8_t error = wire->endTransmission();
 
     if (error == 0) {
+      i2cHealth.recordSuccess();
       lastActivity = millis();
       return true;
+    } else {
+      i2cHealth.recordFailure();
     }
     return false;
   }
@@ -607,36 +677,56 @@ private:
     char detail[32];
   };
 
+  struct LogHeader {
+    uint32_t magic;
+    uint16_t writeIndex;
+    uint16_t count;
+  };
+
+  static const uint32_t MAGIC_MARKER = 0xDEADBEEF;
   LogEntry* entries;
-  uint16_t writeIndex;
-  uint16_t count;
+  LogHeader* header;
   bool usePSRAM;
 
 public:
-  ActivityLogger() : writeIndex(0), count(0), usePSRAM(false), entries(nullptr) {}
+  ActivityLogger() : usePSRAM(false), entries(nullptr), header(nullptr) {}
 
   void begin() {
     // Check for PSRAM and allocate buffer
     if (psramFound()) {
+      header = (LogHeader*)ps_malloc(sizeof(LogHeader));
       entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
-      if (entries) {
+      if (entries && header) {
         usePSRAM = true;
-        Serial.println(F("Activity log using PSRAM"));
+        if (header->magic == MAGIC_MARKER && header->writeIndex < MAX_ENTRIES && header->count <= MAX_ENTRIES) {
+          Serial.print(F("Activity log using PSRAM with "));
+          Serial.print(header->count);
+          Serial.println(F(" existing entries preserved"));
+        } else {
+          Serial.println(F("Activity log using PSRAM (initialized)"));
+          header->magic = MAGIC_MARKER;
+          header->writeIndex = 0;
+          header->count = 0;
+          memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
+        }
       }
     }
 
-    if (!entries) {
+    if (!entries || !header) {
+      header = new LogHeader;
       entries = new LogEntry[MAX_ENTRIES];
+      header->magic = MAGIC_MARKER;
+      header->writeIndex = 0;
+      header->count = 0;
+      memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
       Serial.println(F("Activity log using regular RAM"));
     }
-
-    memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
   }
 
   void log(const char* action, uint8_t target = 0, const char* detail = nullptr) {
-    if (!entries) return;
+    if (!entries || !header) return;
 
-    LogEntry& entry = entries[writeIndex];
+    LogEntry& entry = entries[header->writeIndex];
     entry.timestamp = time(nullptr);
     strlcpy(entry.action, action, sizeof(entry.action));
     entry.target = target;
@@ -646,15 +736,17 @@ public:
       entry.detail[0] = 0;
     }
 
-    writeIndex = (writeIndex + 1) % MAX_ENTRIES;
-    if (count < MAX_ENTRIES) count++;
+    header->writeIndex = (header->writeIndex + 1) % MAX_ENTRIES;
+    if (header->count < MAX_ENTRIES) header->count++;
   }
 
   void getLog(JsonDocument& doc) {
+    if (!entries || !header) return;
+
     JsonArray logs = doc.createNestedArray("log");
 
-    uint16_t start = (count < MAX_ENTRIES) ? 0 : writeIndex;
-    for (uint16_t i = 0; i < count; i++) {
+    uint16_t start = (header->count < MAX_ENTRIES) ? 0 : header->writeIndex;
+    for (uint16_t i = 0; i < header->count; i++) {
       // Feed watchdog every 10 entries during log serialization
       if (i % 10 == 0) {
         esp_task_wdt_reset();
@@ -678,7 +770,7 @@ public:
       if (strlen(entries[idx].detail) > 0) entry["detail"] = entries[idx].detail;
     }
 
-    doc["count"] = count;
+    doc["count"] = header->count;
     doc["psram"] = usePSRAM;
   }
 };
@@ -983,6 +1075,10 @@ public:
 // ============================================
 // COMMAND PROCESSOR
 // ============================================
+// External declarations for global variables
+extern String restartReason;
+extern uint32_t restartTime;
+
 class CommandProcessor {
 private:
   HubController* hub;
@@ -1252,6 +1348,45 @@ public:
     response["version"] = "2.0";
     response["uptime"] = millis();
     response["commands"] = commandCount;
+    response["restart_reason"] = restartReason;
+    response["restart_time"] = restartTime;
+
+    // ESP32 system status
+    response["free_heap"] = ESP.getFreeHeap();
+    response["heap_size"] = ESP.getHeapSize();
+    response["min_free_heap"] = ESP.getMinFreeHeap();
+
+    #ifdef CONFIG_SPIRAM_SUPPORT
+      response["free_psram"] = ESP.getFreePsram();
+      response["psram_size"] = ESP.getPsramSize();
+    #endif
+
+    response["cpu_freq"] = ESP.getCpuFreqMHz();
+    response["flash_size"] = ESP.getFlashChipSize();
+    response["sdk_version"] = ESP.getSdkVersion();
+
+    #ifdef CONFIG_IDF_TARGET_ESP32S3
+      // ESP32-S3 has internal temperature sensor
+      response["temperature"] = temperatureRead();
+    #endif
+
+    // WiFi status
+    if (WiFi.status() == WL_CONNECTED) {
+      response["wifi_rssi"] = WiFi.RSSI();
+      response["wifi_channel"] = WiFi.channel();
+    }
+
+    // I2C health metrics
+    JsonObject i2c = response.createNestedObject("i2c");
+    i2c["total_transactions"] = i2cHealth.totalTransactions;
+    i2c["failed_transactions"] = i2cHealth.failedTransactions;
+    i2c["error_rate"] = i2cHealth.errorRate;
+    if (i2cHealth.lastSuccessTime > 0) {
+      i2c["last_success_ago"] = millis() - i2cHealth.lastSuccessTime;
+    }
+    if (i2cHealth.lastFailTime > 0) {
+      i2c["last_fail_ago"] = millis() - i2cHealth.lastFailTime;
+    }
 
     JsonObject pinStates = response.createNestedObject("pins");
     pinStates["boot"] = pins->getBootState() ? "HIGH" : "LOW";
@@ -1337,6 +1472,11 @@ public:
 // ============================================
 // MAIN PROGRAM
 // ============================================
+
+// Global variables for restart tracking (defined in setup())
+String restartReason;
+uint32_t restartTime;
+
 // Wire1 is predefined in ESP32 library
 HubController hubController(&Wire);
 PinController pinController(BOOT_PIN, RESET_PIN);
@@ -1383,7 +1523,7 @@ void handleWebNotFound() {
 
 void handleWebStatus() {
   Serial.println(F("HTTP: Status API requested"));
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<2048> doc;
   doc["status"] = "ok";
   doc["uptime"] = millis();
 
@@ -1454,7 +1594,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
         // Special handling for status command - send full response
         const char* action = cmd["cmd"];
         if (strcmp(action, "status") == 0) {
-          StaticJsonDocument<1024> status;
+          StaticJsonDocument<3072> status;
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -1466,6 +1606,47 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           JsonObject network = status.createNestedObject("network");
           network["ip"] = WiFi.localIP().toString();
           network["connected"] = true;
+
+          // Add restart info
+          status["restart_reason"] = restartReason;
+          status["restart_time"] = restartTime;
+
+          // ESP32 system status
+          status["free_heap"] = ESP.getFreeHeap();
+          status["heap_size"] = ESP.getHeapSize();
+          status["min_free_heap"] = ESP.getMinFreeHeap();
+
+          #ifdef CONFIG_SPIRAM_SUPPORT
+            status["free_psram"] = ESP.getFreePsram();
+            status["psram_size"] = ESP.getPsramSize();
+          #endif
+
+          status["cpu_freq"] = ESP.getCpuFreqMHz();
+          status["flash_size"] = ESP.getFlashChipSize();
+          status["sdk_version"] = ESP.getSdkVersion();
+
+          #ifdef CONFIG_IDF_TARGET_ESP32S3
+            // ESP32-S3 has internal temperature sensor
+            status["temperature"] = temperatureRead();
+          #endif
+
+          // WiFi status
+          if (WiFi.status() == WL_CONNECTED) {
+            status["wifi_rssi"] = WiFi.RSSI();
+            status["wifi_channel"] = WiFi.channel();
+          }
+
+          // I2C health metrics
+          JsonObject i2c = status.createNestedObject("i2c");
+          i2c["total_transactions"] = i2cHealth.totalTransactions;
+          i2c["failed_transactions"] = i2cHealth.failedTransactions;
+          i2c["error_rate"] = i2cHealth.errorRate;
+          if (i2cHealth.lastSuccessTime > 0) {
+            i2c["last_success_ago"] = millis() - i2cHealth.lastSuccessTime;
+          }
+          if (i2cHealth.lastFailTime > 0) {
+            i2c["last_fail_ago"] = millis() - i2cHealth.lastFailTime;
+          }
 
           // Add ports info
           JsonObject ports = status.createNestedObject("ports");
@@ -1486,7 +1667,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           // Port command - send full status update to all clients
           delay(50); // Give hardware time to update
 
-          StaticJsonDocument<1024> status;
+          StaticJsonDocument<3072> status;
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -1540,7 +1721,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           wsServer.sendTXT(num, msg);
         } else if (strcmp(action, "hub") == 0) {
           // Hub command - send full status update to all clients
-          StaticJsonDocument<1024> status;
+          StaticJsonDocument<3072> status;
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -1553,6 +1734,10 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           network["ip"] = WiFi.localIP().toString();
           network["connected"] = true;
 
+          // Add restart info
+          status["restart_reason"] = restartReason;
+          status["restart_time"] = restartTime;
+
           // Send full status to all connected clients
           String msg;
           serializeJson(status, msg);
@@ -1561,7 +1746,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           // All off command - send full status update to all clients
           delay(50); // Give hardware time to update
 
-          StaticJsonDocument<1024> status;
+          StaticJsonDocument<3072> status;
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -1610,7 +1795,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 void broadcastStatus() {
   if (!wsConnected) return;
 
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<2048> doc;
 
   // Add full hub information
   JsonArray hubs = doc.createNestedArray("hubs");
@@ -1632,6 +1817,45 @@ void broadcastStatus() {
   JsonObject system = doc.createNestedObject("system");
   system["uptime"] = millis();
   system["ip"] = WiFi.localIP().toString();
+  system["restart_reason"] = restartReason;
+  system["restart_time"] = restartTime;
+
+  // ESP32 system status
+  system["free_heap"] = ESP.getFreeHeap();
+  system["heap_size"] = ESP.getHeapSize();
+  system["min_free_heap"] = ESP.getMinFreeHeap();
+
+  #ifdef CONFIG_SPIRAM_SUPPORT
+    system["free_psram"] = ESP.getFreePsram();
+    system["psram_size"] = ESP.getPsramSize();
+  #endif
+
+  system["cpu_freq"] = ESP.getCpuFreqMHz();
+  system["flash_size"] = ESP.getFlashChipSize();
+  system["sdk_version"] = ESP.getSdkVersion();
+
+  #ifdef CONFIG_IDF_TARGET_ESP32S3
+    // ESP32-S3 has internal temperature sensor
+    system["temperature"] = temperatureRead();
+  #endif
+
+  // WiFi status
+  if (WiFi.status() == WL_CONNECTED) {
+    system["wifi_rssi"] = WiFi.RSSI();
+    system["wifi_channel"] = WiFi.channel();
+  }
+
+  // I2C health metrics
+  JsonObject i2c = doc.createNestedObject("i2c");
+  i2c["total_transactions"] = i2cHealth.totalTransactions;
+  i2c["failed_transactions"] = i2cHealth.failedTransactions;
+  i2c["error_rate"] = i2cHealth.errorRate;
+  if (i2cHealth.lastSuccessTime > 0) {
+    i2c["last_success_ago"] = millis() - i2cHealth.lastSuccessTime;
+  }
+  if (i2cHealth.lastFailTime > 0) {
+    i2c["last_fail_ago"] = millis() - i2cHealth.lastFailTime;
+  }
 
   // Add pin states
   JsonObject pins = doc.createNestedObject("pins");
@@ -1656,6 +1880,52 @@ void setup() {
   Serial.print(F("         Board: "));
   Serial.println(F(BOARD_TYPE));
   Serial.println(F("=====================================\n"));
+
+  // Get and log restart reason
+  restartTime = millis();
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  switch(resetReason) {
+    case ESP_RST_POWERON:
+      restartReason = "Power on reset";
+      break;
+    case ESP_RST_EXT:
+      restartReason = "External reset";
+      break;
+    case ESP_RST_SW:
+      restartReason = "Software reset";
+      break;
+    case ESP_RST_PANIC:
+      restartReason = "Exception/panic";
+      break;
+    case ESP_RST_INT_WDT:
+      restartReason = "Interrupt watchdog";
+      break;
+    case ESP_RST_TASK_WDT:
+      restartReason = "Task watchdog";
+      break;
+    case ESP_RST_WDT:
+      restartReason = "Other watchdog";
+      break;
+    case ESP_RST_DEEPSLEEP:
+      restartReason = "Deep sleep reset";
+      break;
+    case ESP_RST_BROWNOUT:
+      restartReason = "Brownout reset";
+      break;
+    case ESP_RST_SDIO:
+      restartReason = "SDIO reset";
+      break;
+    default:
+      restartReason = "Unknown (" + String(resetReason) + ")";
+  }
+
+  Serial.print(F("Restart reason: "));
+  Serial.println(restartReason);
+
+  // Check for crash/panic info
+  if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
+    Serial.println(F("\n*** WARNING: Previous session ended with crash/watchdog reset! ***\n"));
+  }
 
   // Initialize watchdog timer
   Serial.print(F("Initializing watchdog ("));
@@ -1686,6 +1956,10 @@ void setup() {
   // Initialize configuration first
   configManager.begin();
   activityLogger.begin();
+
+  // Log the restart
+  activityLogger.log("system_restart", 0, restartReason.c_str());
+
   esp_task_wdt_reset();  // Feed watchdog
 
   // Initialize components

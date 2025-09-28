@@ -406,7 +406,7 @@
             const grid = document.getElementById('portsGrid');
             if (grid.children.length === 0) {
                 // Initial render
-                for (let i = 1; i <= 16; i++) {
+                for (let i = 1; i <= 32; i++) {
                     const card = document.createElement('div');
                     card.className = 'port-card';
                     card.id = `port-${i}`;
@@ -424,7 +424,7 @@
             }
 
             // Update port states
-            for (let i = 1; i <= 16; i++) {
+            for (let i = 1; i <= 32; i++) {
                 const card = document.getElementById(`port-${i}`);
                 const status = document.getElementById(`status-${i}`);
                 const state = ports[i] || 'off';

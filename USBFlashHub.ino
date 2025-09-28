@@ -1196,7 +1196,7 @@ void handleWebStatus() {
 
   // Add port states
   JsonObject ports = doc.createNestedObject("ports");
-  for (uint8_t i = 1; i <= 16; i++) {
+  for (uint8_t i = 1; i <= 32; i++) {
     uint8_t hubNum, portNum;
     if (hubController.getHubAndPort(i, hubNum, portNum)) {
       uint8_t state = hubController.getPortState(hubNum, portNum);
@@ -1278,7 +1278,7 @@ void broadcastStatus() {
 
   // Add port states
   JsonObject ports = doc.createNestedObject("ports");
-  for (uint8_t i = 1; i <= 16; i++) {
+  for (uint8_t i = 1; i <= 32; i++) {
     uint8_t hubNum, portNum;
     if (hubController.getHubAndPort(i, hubNum, portNum)) {
       uint8_t state = hubController.getPortState(hubNum, portNum);

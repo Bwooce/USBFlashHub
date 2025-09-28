@@ -20,7 +20,7 @@ USBFlashHub - ESP32-S2 controller for USB hub management and microcontroller pro
 - Auto-detects board type at compile time
 
 ## Key Simplifications from Original
-- **Static Port Numbering**: Ports 1-16 mapped sequentially across hubs
+- **Static Port Numbering**: Ports 1-32 mapped sequentially across hubs
 - **Direct Pin Control**: Boot/Reset pins just HIGH/LOW (no per-board config)
 - **Hardcoded Hub Addresses**: Up to 8 hubs at 0x18-0x1F (configurable via MAX_HUBS)
 - **Power Level Control**: Off/100mA/500mA per USB spec

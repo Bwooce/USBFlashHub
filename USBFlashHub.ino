@@ -138,8 +138,8 @@
   #pragma message("Compiling for ESP32-S3")
   // ESP32-S3 Zero/Mini Pin Assignments
   // I2C for USB Hub control
-  #define I2C_SDA 2
-  #define I2C_SCL 1
+  #define I2C_SDA 1
+  #define I2C_SCL 2
   // Programming control pins
   #define BOOT_PIN 3
   #define RESET_PIN 4  // Active LOW
@@ -317,7 +317,14 @@ public:
 
     hubStates[hubIndex] = (hubStates[hubIndex] & ~portMask) | portValue;
 
-    return updateHub(hubIndex);
+    bool success = updateHub(hubIndex);
+
+    // Update the LED for this port
+    if (success) {
+      updatePortLED(hubIndex, portIndex, powerLevel != POWER_OFF);
+    }
+
+    return success;
   }
 
   // Set all ports on a hub
@@ -414,6 +421,31 @@ private:
       return true;
     }
     return false;
+  }
+
+  // Control LED for individual port
+  void updatePortLED(uint8_t hubIndex, uint8_t portIndex, bool on) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
+
+    // Read current LED state from register 0x01
+    wire->beginTransmission(HUB_ADDRESSES[hubIndex]);
+    wire->write(0x01);  // Output port register
+    wire->endTransmission();
+
+    wire->requestFrom(HUB_ADDRESSES[hubIndex], (uint8_t)1);
+    if (wire->available()) {
+      uint8_t ledState = wire->read();
+
+      // Each port has its own LED bit (assuming bit 0-3 for ports 0-3)
+      // Bit 3 might be global LED control based on original code
+      bitWrite(ledState, portIndex, on ? 1 : 0);
+
+      // Write back the LED state
+      wire->beginTransmission(HUB_ADDRESSES[hubIndex]);
+      wire->write(0x01);  // Output port register
+      wire->write(ledState);
+      wire->endTransmission();
+    }
   }
 
   const char* getPowerString(uint8_t level) {
@@ -1316,12 +1348,56 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
     case WStype_TEXT: {
       // Process command from WebSocket
       String cmdStr = String((char*)payload);
+      Serial.print(F("WebSocket command: "));
+      Serial.println(cmdStr);
+
       StaticJsonDocument<256> cmd;
       DeserializationError error = deserializeJson(cmd, cmdStr);
 
       if (!error) {
-        // Process command and send response via WebSocket
+        // Process the command
         processor.processCommand(cmdStr);
+
+        // Special handling for status command - send full response
+        const char* action = cmd["cmd"];
+        if (strcmp(action, "status") == 0) {
+          StaticJsonDocument<1024> status;
+          status["status"] = "ok";
+          status["uptime"] = millis();
+
+          // Add hubs info
+          JsonArray hubs = status.createNestedArray("hubs");
+          hubController.getStatus(status);
+
+          // Add network info
+          JsonObject network = status.createNestedObject("network");
+          network["ip"] = WiFi.localIP().toString();
+          network["connected"] = true;
+
+          // Add ports info
+          JsonObject ports = status.createNestedObject("ports");
+          for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
+            uint8_t hubNum, portNum;
+            if (hubController.getHubAndPort(i, hubNum, portNum)) {
+              uint8_t state = hubController.getPortState(hubNum, portNum);
+              if (state == POWER_OFF) ports[String(i)] = "off";
+              else if (state == POWER_100MA) ports[String(i)] = "100mA";
+              else if (state == POWER_500MA) ports[String(i)] = "500mA";
+            }
+          }
+
+          String msg;
+          serializeJson(status, msg);
+          wsServer.sendTXT(num, msg);
+        } else {
+          // Echo success for other commands
+          StaticJsonDocument<256> response;
+          response["status"] = "ok";
+          response["cmd"] = action;
+          String msg;
+          serializeJson(response, msg);
+          wsServer.sendTXT(num, msg);
+        }
       } else {
         StaticJsonDocument<256> response;
         response["status"] = "error";
@@ -1425,8 +1501,8 @@ void setup() {
   Serial.print(I2C_SDA);
   Serial.print(F(", SCL="));
   Serial.println(I2C_SCL);
-  Wire.begin(I2C_SDA, I2C_SCL, 100000);
-  Serial.println(F("  I2C initialized at 100kHz"));
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Serial.println(F("  I2C initialized"));
 
   pinController.begin();
 

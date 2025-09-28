@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USBFlashHub Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ddd;
+        }
+
+        .status-dot.connected {
+            background: #4CAF50;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel h2 {
+            color: #333;
+            font-size: 20px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .ports-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 15px;
+        }
+
+        .port-card {
+            background: #f8f9fa;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .port-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        .port-card.active {
+            background: #e8f5e9;
+            border-color: #4CAF50;
+        }
+
+        .port-card.active-500 {
+            background: #fff3e0;
+            border-color: #FF9800;
+        }
+
+        .port-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .port-status {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 10px;
+            font-weight: 500;
+        }
+
+        .port-controls {
+            display: flex;
+            gap: 5px;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+
+        .btn:hover {
+            transform: scale(1.05);
+        }
+
+        .btn-off {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-100 {
+            background: #2196F3;
+            color: white;
+        }
+
+        .btn-500 {
+            background: #FF9800;
+            color: white;
+        }
+
+        .control-section {
+            margin-bottom: 20px;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+
+        .control-group label {
+            font-size: 14px;
+            color: #666;
+            min-width: 80px;
+        }
+
+        .btn-control {
+            padding: 8px 16px;
+            background: #673ab7;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-control:hover {
+            background: #5e35b1;
+        }
+
+        .btn-control.danger {
+            background: #f44336;
+        }
+
+        .btn-control.danger:hover {
+            background: #d32f2f;
+        }
+
+        .activity-log {
+            max-height: 400px;
+            overflow-y: auto;
+            background: #f5f5f5;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .log-entry {
+            padding: 4px 8px;
+            margin-bottom: 2px;
+            background: white;
+            border-left: 3px solid #ddd;
+            word-wrap: break-word;
+        }
+
+        .log-entry.error {
+            border-left-color: #f44336;
+            background: #ffebee;
+        }
+
+        .log-entry.success {
+            border-left-color: #4CAF50;
+            background: #e8f5e9;
+        }
+
+        .log-time {
+            color: #888;
+            margin-right: 8px;
+        }
+
+        .pin-state {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-left: 5px;
+        }
+
+        .pin-state.high {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .pin-state.low {
+            background: #f44336;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔌 USBFlashHub Control Panel</h1>
+            <div class="status-bar">
+                <div class="status-item">
+                    <div class="status-dot" id="wsStatus"></div>
+                    <span id="connectionStatus">Connecting...</span>
+                </div>
+                <div class="status-item">
+                    <span id="ipAddress">IP: -</span>
+                </div>
+                <div class="status-item">
+                    <span id="uptime">Uptime: -</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-grid">
+            <div class="panel">
+                <h2>USB Ports</h2>
+                <div class="ports-grid" id="portsGrid">
+                    <!-- Ports will be generated dynamically -->
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Pin Control</h2>
+                <div class="control-section">
+                    <div class="control-group">
+                        <label>Boot Pin:</label>
+                        <span id="bootState" class="pin-state low">LOW</span>
+                        <button class="btn-control" onclick="setPinState('boot', true)">HIGH</button>
+                        <button class="btn-control" onclick="setPinState('boot', false)">LOW</button>
+                    </div>
+                    <div class="control-group">
+                        <label>Reset Pin:</label>
+                        <span id="resetState" class="pin-state high">HIGH</span>
+                        <button class="btn-control" onclick="setPinState('reset', false)">Assert</button>
+                        <button class="btn-control" onclick="setPinState('reset', true)">Release</button>
+                        <button class="btn-control" onclick="pulseReset()">Pulse</button>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3 style="font-size: 16px; margin-bottom: 10px;">Quick Actions</h3>
+                    <button class="btn-control danger" onclick="allOff()">⚡ All Ports Off</button>
+                    <button class="btn-control" onclick="refreshStatus()">🔄 Refresh Status</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Activity Log</h2>
+            <div class="activity-log" id="activityLog">
+                <!-- Log entries will be added here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let ports = {};
+        let reconnectTimer;
+        let bootPinState = false;
+        let resetPinState = true;
+
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                document.getElementById('wsStatus').classList.add('connected');
+                document.getElementById('connectionStatus').textContent = 'Connected';
+                clearTimeout(reconnectTimer);
+                refreshStatus();
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error('Failed to parse message:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                addLog('WebSocket error', 'error');
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wsStatus').classList.remove('connected');
+                document.getElementById('connectionStatus').textContent = 'Disconnected';
+                reconnectTimer = setTimeout(initWebSocket, 3000);
+            };
+        }
+
+        function sendCommand(cmd) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(cmd));
+                return true;
+            }
+            console.error('WebSocket not connected');
+            return false;
+        }
+
+        function handleMessage(data) {
+            if (data.ports) {
+                updatePorts(data.ports);
+            }
+            if (data.log) {
+                updateLog(data.log);
+            }
+            if (data.system) {
+                updateSystem(data.system);
+            }
+            if (data.pins) {
+                updatePinStates(data.pins);
+            }
+            if (data.status === 'error') {
+                addLog(`Error: ${data.msg} ${data.detail || ''}`, 'error');
+            }
+            if (data.status === 'ok' && data.msg) {
+                addLog(data.msg, 'success');
+            }
+        }
+
+        function updatePorts(portsData) {
+            Object.assign(ports, portsData);
+            renderPorts();
+        }
+
+        function renderPorts() {
+            const grid = document.getElementById('portsGrid');
+            if (grid.children.length === 0) {
+                // Initial render
+                for (let i = 1; i <= 16; i++) {
+                    const card = document.createElement('div');
+                    card.className = 'port-card';
+                    card.id = `port-${i}`;
+                    card.innerHTML = `
+                        <div class="port-number">${i}</div>
+                        <div class="port-status" id="status-${i}">OFF</div>
+                        <div class="port-controls">
+                            <button class="btn btn-off" onclick="setPort(${i}, 'off')">Off</button>
+                            <button class="btn btn-100" onclick="setPort(${i}, '100mA')">100</button>
+                            <button class="btn btn-500" onclick="setPort(${i}, '500mA')">500</button>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                }
+            }
+
+            // Update port states
+            for (let i = 1; i <= 16; i++) {
+                const card = document.getElementById(`port-${i}`);
+                const status = document.getElementById(`status-${i}`);
+                const state = ports[i] || 'off';
+
+                card.className = 'port-card';
+                if (state === '100mA') {
+                    card.classList.add('active');
+                    status.textContent = '100mA';
+                } else if (state === '500mA') {
+                    card.classList.add('active-500');
+                    status.textContent = '500mA';
+                } else {
+                    status.textContent = 'OFF';
+                }
+            }
+        }
+
+        function setPort(port, power) {
+            sendCommand({ cmd: 'port', port: port, power: power });
+        }
+
+        function setPinState(pin, state) {
+            sendCommand({ cmd: pin, state: state });
+            if (pin === 'boot') {
+                bootPinState = state;
+                document.getElementById('bootState').className = `pin-state ${state ? 'high' : 'low'}`;
+                document.getElementById('bootState').textContent = state ? 'HIGH' : 'LOW';
+            } else if (pin === 'reset') {
+                resetPinState = state;
+                document.getElementById('resetState').className = `pin-state ${state ? 'high' : 'low'}`;
+                document.getElementById('resetState').textContent = state ? 'HIGH' : 'LOW';
+            }
+        }
+
+        function pulseReset() {
+            sendCommand({ cmd: 'reset', pulse: 100 });
+            addLog('Reset pulse sent (100ms)', 'success');
+        }
+
+        function allOff() {
+            if (confirm('Turn off all ports?')) {
+                sendCommand({ cmd: 'alloff' });
+            }
+        }
+
+        function refreshStatus() {
+            sendCommand({ cmd: 'status' });
+            sendCommand({ cmd: 'log' });
+        }
+
+        function updateSystem(system) {
+            if (system.ip) {
+                document.getElementById('ipAddress').textContent = `IP: ${system.ip}`;
+            }
+            if (system.uptime) {
+                const hours = Math.floor(system.uptime / 3600000);
+                const minutes = Math.floor((system.uptime % 3600000) / 60000);
+                document.getElementById('uptime').textContent = `Uptime: ${hours}h ${minutes}m`;
+            }
+        }
+
+        function updatePinStates(pins) {
+            if (pins.boot !== undefined) {
+                bootPinState = pins.boot;
+                document.getElementById('bootState').className = `pin-state ${pins.boot ? 'high' : 'low'}`;
+                document.getElementById('bootState').textContent = pins.boot ? 'HIGH' : 'LOW';
+            }
+            if (pins.reset !== undefined) {
+                resetPinState = pins.reset;
+                document.getElementById('resetState').className = `pin-state ${pins.reset ? 'high' : 'low'}`;
+                document.getElementById('resetState').textContent = pins.reset ? 'HIGH' : 'LOW';
+            }
+        }
+
+        function updateLog(logEntries) {
+            const logDiv = document.getElementById('activityLog');
+            logDiv.innerHTML = '';
+            logEntries.slice(-50).reverse().forEach(entry => {
+                const div = document.createElement('div');
+                div.className = 'log-entry';
+                const time = entry.time ? new Date(entry.time).toLocaleTimeString() : '';
+                div.innerHTML = `<span class="log-time">${time}</span>${entry.action}${entry.detail ? ': ' + entry.detail : ''}`;
+                logDiv.appendChild(div);
+            });
+        }
+
+        function addLog(message, type = '') {
+            const logDiv = document.getElementById('activityLog');
+            const div = document.createElement('div');
+            div.className = `log-entry ${type}`;
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML = `<span class="log-time">${time}</span>${message}`;
+            logDiv.insertBefore(div, logDiv.firstChild);
+
+            // Keep only last 50 entries
+            while (logDiv.children.length > 50) {
+                logDiv.removeChild(logDiv.lastChild);
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            renderPorts();
+            initWebSocket();
+        });
+    </script>
+</body>
+</html>

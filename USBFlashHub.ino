@@ -87,24 +87,91 @@
 #include <Preferences.h>
 #include <time.h>
 #include <esp_task_wdt.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
+#include <LittleFS.h>
+
+// RGB LED support for S3-Zero
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  #include <Adafruit_NeoPixel.h>
+#endif
 
 // ============================================
-// ESP32-S2 Mini Pin Assignments
+// Board Detection and Pin Assignments
 // ============================================
-// I2C for USB Hub control
-#define I2C_SDA       33  // Default SDA on S2 Mini
-#define I2C_SCL       35  // Default SCL on S2 Mini
 
-// Programming control pins
-#define BOOT_PIN      11  // BOOT control (HIGH/LOW meaning varies by target)
-#define RESET_PIN     12  // RESET control (active LOW)
+// Detect which ESP32 variant we're compiling for
+#if defined(CONFIG_IDF_TARGET_ESP32S2)
+  #define BOARD_TYPE "ESP32-S2"
+  #pragma message("Compiling for ESP32-S2")
+  // ESP32-S2 Mini / Wemos S2 Mini Pin Assignments
+  // I2C for USB Hub control
+  #define I2C_SDA 33
+  #define I2C_SCL 35
+  // Programming control pins
+  #define BOOT_PIN 11
+  #define RESET_PIN 12  // Active LOW
+  // Status LEDs
+  #define STATUS_LED 15
+  #define ACTIVITY_LED 13
+  // Emergency stop (optional)
+  #define EMERGENCY_BTN 0  // Built-in button on GPIO0
 
-// Status indicators
-#define STATUS_LED    15  // System status LED
-#define ACTIVITY_LED  13  // Activity indicator LED
+#elif defined(CONFIG_IDF_TARGET_ESP32C3)
+  #define BOARD_TYPE "ESP32-C3"
+  #pragma message("Compiling for ESP32-C3")
+  // ESP32-C3 Zero / C3 Mini Pin Assignments
+  // I2C for USB Hub control
+  #define I2C_SDA 4
+  #define I2C_SCL 5
+  // Programming control pins
+  #define BOOT_PIN 6
+  #define RESET_PIN 7  // Active LOW
+  // Status LEDs
+  #define STATUS_LED 8
+  #define ACTIVITY_LED 10
+  // Emergency stop (optional)
+  #define EMERGENCY_BTN 9  // Boot button on C3 Zero
 
-// Emergency stop button
-#define EMERGENCY_BTN 0   // BOOT button as emergency stop
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  #define BOARD_TYPE "ESP32-S3"
+  #pragma message("Compiling for ESP32-S3")
+  // ESP32-S3 Zero/Mini Pin Assignments
+  // I2C for USB Hub control
+  #define I2C_SDA 2
+  #define I2C_SCL 1
+  // Programming control pins
+  #define BOOT_PIN 3
+  #define RESET_PIN 4  // Active LOW
+  // S3-Zero has onboard WS2812 RGB LED
+  #define RGB_LED_PIN 21
+  #define RGB_LED_COUNT 1
+  #define USE_RGB_LED
+  // Dummy pins for compatibility (not used with RGB LED)
+  #define STATUS_LED 255
+  #define ACTIVITY_LED 255
+  // Emergency stop (optional)
+  #define EMERGENCY_BTN 0  // Built-in button on GPIO0
+
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+  #define BOARD_TYPE "ESP32"
+  #pragma message("Compiling for ESP32")
+  // Original ESP32 Pin Assignments
+  // I2C for USB Hub control
+  #define I2C_SDA 21
+  #define I2C_SCL 22
+  // Programming control pins
+  #define BOOT_PIN 13
+  #define RESET_PIN 12  // Active LOW
+  // Status LEDs
+  #define STATUS_LED 2
+  #define ACTIVITY_LED 4
+  // Emergency stop (optional)
+  #define EMERGENCY_BTN 0  // Built-in button on GPIO0
+
+#else
+  #error "Unsupported ESP32 variant. Please use ESP32, ESP32-S2, ESP32-S3, or ESP32-C3"
+#endif
 
 // NTP Configuration
 #define NTP_SERVER "pool.ntp.org"
@@ -119,12 +186,16 @@
 // ============================================
 // Hardcoded hub addresses for consistent port numbering
 // Port numbering: Hub 1 = ports 1-4, Hub 2 = ports 5-8, etc.
-#define MAX_HUBS      4   // Configure based on your setup
+#define MAX_HUBS      8   // Configure based on your setup
 const uint8_t HUB_ADDRESSES[MAX_HUBS] = {
-  0x44,  // Hub 1: ports 1-4
-  0x45,  // Hub 2: ports 5-8
-  0x46,  // Hub 3: ports 9-12
-  0x47   // Hub 4: ports 13-16
+  0x18,  // Hub 1: ports 1-4
+  0x19,  // Hub 2: ports 5-8
+  0x1A,  // Hub 3: ports 9-12
+  0x1B,  // Hub 4: ports 13-16
+  0x1C,  // Hub 5: ports 17-20
+  0x1D,  // Hub 6: ports 21-24
+  0x1E,  // Hub 7: ports 25-28
+  0x1F   // Hub 8: ports 29-32
 };
 
 // USB Power levels per USB spec
@@ -253,6 +324,20 @@ public:
 
   uint32_t getLastActivity() { return lastActivity; }
   uint8_t getNumConnected() { return numConnected; }
+
+  // Convert absolute port number to hub and port indices
+  bool getHubAndPort(uint8_t portNum, uint8_t& hubIndex, uint8_t& portIndex) {
+    if (portNum < 1 || portNum > (MAX_HUBS * 4)) return false;
+    hubIndex = (portNum - 1) / 4;
+    portIndex = (portNum - 1) % 4;
+    return connectedHubs[hubIndex];
+  }
+
+  // Get power state of a specific port
+  uint8_t getPortState(uint8_t hubIndex, uint8_t portIndex) {
+    if (hubIndex >= MAX_HUBS || portIndex >= 4) return POWER_OFF;
+    return (hubStates[hubIndex] >> (portIndex * 2)) & 0x03;
+  }
 
   // Get status of all ports
   void getStatus(JsonDocument& status) {
@@ -545,30 +630,97 @@ private:
   uint32_t lastBlink;
   bool statusState;
 
+#ifdef USE_RGB_LED
+  Adafruit_NeoPixel* rgbLed;
+  uint32_t lastActivityTime;
+  bool activityState;
+#endif
+
 public:
   LEDController(uint8_t status, uint8_t activity)
-    : statusPin(status), activityPin(activity), lastBlink(0), statusState(false) {}
+    : statusPin(status), activityPin(activity), lastBlink(0), statusState(false) {
+#ifdef USE_RGB_LED
+    rgbLed = nullptr;
+    lastActivityTime = 0;
+    activityState = false;
+#endif
+  }
 
   void begin() {
+#ifdef USE_RGB_LED
+    // Initialize RGB LED for S3-Zero
+    rgbLed = new Adafruit_NeoPixel(RGB_LED_COUNT, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
+    rgbLed->begin();
+    rgbLed->setBrightness(50);  // Not too bright
+    setRGBStatus(true);  // Green for status on
+#else
+    // Standard GPIO LEDs
     pinMode(statusPin, OUTPUT);
     pinMode(activityPin, OUTPUT);
     setStatus(true);  // Status on at startup
     setActivity(false);
+#endif
   }
 
-  void setStatus(bool on) {
-    digitalWrite(statusPin, on ? HIGH : LOW);
+#ifdef USE_RGB_LED
+  void setRGBColor(uint8_t r, uint8_t g, uint8_t b) {
+    if (rgbLed) {
+      rgbLed->setPixelColor(0, rgbLed->Color(r, g, b));
+      rgbLed->show();
+    }
+  }
+
+  void setRGBStatus(bool on) {
+    if (on) {
+      setRGBColor(0, 25, 0);  // Green for status OK
+    } else {
+      setRGBColor(0, 0, 0);    // Off
+    }
     statusState = on;
   }
 
+  void flashRGBActivity() {
+    setRGBColor(0, 0, 25);  // Blue for activity
+    lastActivityTime = millis();
+    activityState = true;
+  }
+
+  void updateRGB() {
+    // Auto-clear activity flash after 50ms
+    if (activityState && millis() - lastActivityTime > 50) {
+      setRGBStatus(statusState);  // Return to status color
+      activityState = false;
+    }
+  }
+#endif
+
+  void setStatus(bool on) {
+#ifdef USE_RGB_LED
+    setRGBStatus(on);
+#else
+    digitalWrite(statusPin, on ? HIGH : LOW);
+    statusState = on;
+#endif
+  }
+
   void setActivity(bool on) {
+#ifdef USE_RGB_LED
+    if (on) {
+      flashRGBActivity();
+    }
+#else
     digitalWrite(activityPin, on ? HIGH : LOW);
+#endif
   }
 
   void flashActivity(uint32_t ms = 50) {
+#ifdef USE_RGB_LED
+    flashRGBActivity();
+#else
     setActivity(true);
     delay(ms);
     setActivity(false);
+#endif
   }
 
   void blinkStatus(uint32_t interval = 1000) {
@@ -580,6 +732,15 @@ public:
   }
 
   void errorPattern() {
+#ifdef USE_RGB_LED
+    for (int i = 0; i < 3; i++) {
+      setRGBColor(25, 0, 0);  // Red for error
+      delay(100);
+      setRGBColor(0, 0, 0);   // Off
+      delay(100);
+    }
+    setRGBStatus(statusState);  // Return to normal
+#else
     for (int i = 0; i < 3; i++) {
       setStatus(true);
       setActivity(true);
@@ -588,6 +749,13 @@ public:
       setActivity(false);
       delay(100);
     }
+#endif
+  }
+
+  void loop() {
+#ifdef USE_RGB_LED
+    updateRGB();
+#endif
   }
 };
 
@@ -860,6 +1028,8 @@ private:
         config->setWiFi(nullptr, nullptr, enable);
         logger->log("wifi_toggle", enable);
         sendOK(enable ? "WiFi enabled" : "WiFi disabled");
+      } else {
+        sendError("WiFi config requires ssid+pass or enable flag");
       }
     } else if (cmd.containsKey("mdns")) {
       const char* name = cmd["mdns"];
@@ -990,11 +1160,147 @@ WiFiManager wifiManager(&configManager);
 CommandProcessor processor(&hubController, &pinController, &ledController,
                           &configManager, &activityLogger, &wifiManager);
 
+// Web server and WebSocket
+WebServer webServer(80);
+WebSocketsServer wsServer(81);
+bool wsConnected = false;
+
 // Emergency stop handler
 volatile bool emergencyStopFlag = false;
 
 void IRAM_ATTR emergencyStopISR() {
   emergencyStopFlag = true;
+}
+
+// ============================================
+// WEB SERVER HANDLERS
+// ============================================
+void handleWebRoot() {
+  if (LittleFS.exists("/index.html")) {
+    File file = LittleFS.open("/index.html", "r");
+    webServer.streamFile(file, "text/html");
+    file.close();
+  } else {
+    webServer.send(200, "text/html", "<h1>USBFlashHub</h1><p>Upload index.html to LittleFS</p>");
+  }
+}
+
+void handleWebNotFound() {
+  webServer.send(404, "text/plain", "404: Not Found");
+}
+
+void handleWebStatus() {
+  StaticJsonDocument<1024> doc;
+  doc["status"] = "ok";
+  doc["uptime"] = millis();
+
+  // Add port states
+  JsonObject ports = doc.createNestedObject("ports");
+  for (uint8_t i = 1; i <= 16; i++) {
+    uint8_t hubNum, portNum;
+    if (hubController.getHubAndPort(i, hubNum, portNum)) {
+      uint8_t state = hubController.getPortState(hubNum, portNum);
+      if (state == POWER_OFF) ports[String(i)] = "off";
+      else if (state == POWER_100MA) ports[String(i)] = "100mA";
+      else if (state == POWER_500MA) ports[String(i)] = "500mA";
+    }
+  }
+
+  // Add system info
+  JsonObject system = doc.createNestedObject("system");
+  system["ip"] = WiFi.localIP().toString();
+  system["rssi"] = WiFi.RSSI();
+  system["heap"] = ESP.getFreeHeap();
+
+  // Add pin states
+  JsonObject pins = doc.createNestedObject("pins");
+  pins["boot"] = digitalRead(BOOT_PIN);
+  pins["reset"] = digitalRead(RESET_PIN);
+
+  String response;
+  serializeJson(doc, response);
+  webServer.send(200, "application/json", response);
+}
+
+// WebSocket event handler
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  switch(type) {
+    case WStype_DISCONNECTED:
+      wsConnected = false;
+      Serial.printf("WebSocket client %u disconnected\n", num);
+      break;
+
+    case WStype_CONNECTED: {
+      wsConnected = true;
+      IPAddress ip = wsServer.remoteIP(num);
+      Serial.printf("WebSocket client %u connected from %s\n", num, ip.toString().c_str());
+
+      // Send initial status
+      StaticJsonDocument<256> doc;
+      doc["status"] = "connected";
+      doc["msg"] = "USBFlashHub WebSocket connected";
+      String msg;
+      serializeJson(doc, msg);
+      wsServer.sendTXT(num, msg);
+      break;
+    }
+
+    case WStype_TEXT: {
+      // Process command from WebSocket
+      String cmdStr = String((char*)payload);
+      StaticJsonDocument<256> cmd;
+      DeserializationError error = deserializeJson(cmd, cmdStr);
+
+      if (!error) {
+        // Process command and send response via WebSocket
+        processor.processCommand(cmdStr);
+      } else {
+        StaticJsonDocument<256> response;
+        response["status"] = "error";
+        response["msg"] = "Invalid JSON";
+        String msg;
+        serializeJson(response, msg);
+        wsServer.sendTXT(num, msg);
+      }
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+// Broadcast status update to all WebSocket clients
+void broadcastStatus() {
+  if (!wsConnected) return;
+
+  StaticJsonDocument<1024> doc;
+
+  // Add port states
+  JsonObject ports = doc.createNestedObject("ports");
+  for (uint8_t i = 1; i <= 16; i++) {
+    uint8_t hubNum, portNum;
+    if (hubController.getHubAndPort(i, hubNum, portNum)) {
+      uint8_t state = hubController.getPortState(hubNum, portNum);
+      if (state == POWER_OFF) ports[String(i)] = "off";
+      else if (state == POWER_100MA) ports[String(i)] = "100mA";
+      else if (state == POWER_500MA) ports[String(i)] = "500mA";
+    }
+  }
+
+  // Add system info
+  JsonObject system = doc.createNestedObject("system");
+  system["uptime"] = millis();
+  system["ip"] = WiFi.localIP().toString();
+
+  // Add pin states
+  JsonObject pins = doc.createNestedObject("pins");
+  pins["boot"] = digitalRead(BOOT_PIN);
+  pins["reset"] = digitalRead(RESET_PIN);
+
+  String msg;
+  serializeJson(doc, msg);
+  wsServer.broadcastTXT(msg);
 }
 
 void setup() {
@@ -1007,17 +1313,31 @@ void setup() {
   Serial.println(F("\n====================================="));
   Serial.println(F("        USBFlashHub v2.0"));
   Serial.println(F("   USB Hub & Programming Control"));
+  Serial.print(F("         Board: "));
+  Serial.println(F(BOARD_TYPE));
   Serial.println(F("=====================================\n"));
 
   // Initialize watchdog timer
   Serial.print(F("Initializing watchdog ("));
   Serial.print(WDT_TIMEOUT);
   Serial.print(F("s)... "));
+
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+  // ESP32-C3 uses simplified watchdog config (single core)
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT * 1000,
+    .idle_core_mask = 1,  // Single core for C3
+    .trigger_panic = true
+  };
+#else
+  // Multi-core ESP32 variants
   esp_task_wdt_config_t wdt_config = {
     .timeout_ms = WDT_TIMEOUT * 1000,
     .idle_core_mask = 0,
     .trigger_panic = true
   };
+#endif
+
   esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);  // Add current task to WDT
   esp_task_wdt_reset();    // Feed the watchdog
@@ -1068,6 +1388,28 @@ void setup() {
   }
   Serial.println();
 
+  // Initialize LittleFS for web files
+  if (wifiManager.isConnected()) {
+    Serial.print(F("Initializing LittleFS... "));
+    if (!LittleFS.begin(true)) {
+      Serial.println(F("Failed"));
+    } else {
+      Serial.println(F("OK"));
+
+      // Setup web server routes
+      webServer.on("/", handleWebRoot);
+      webServer.on("/status", handleWebStatus);
+      webServer.onNotFound(handleWebNotFound);
+      webServer.begin();
+      Serial.println(F("Web server started on port 80"));
+
+      // Initialize WebSocket server
+      wsServer.begin();
+      wsServer.onEvent(webSocketEvent);
+      Serial.println(F("WebSocket server started on port 81"));
+    }
+  }
+
   activityLogger.log("system_start");
   processor.sendStatus();
 }
@@ -1098,6 +1440,22 @@ void loop() {
       processor.processCommand(line);
     }
   }
+
+  // Handle web server and WebSocket if WiFi is connected
+  if (wifiManager.isConnected()) {
+    webServer.handleClient();
+    wsServer.loop();
+
+    // Broadcast status updates periodically
+    static uint32_t lastBroadcast = 0;
+    if (millis() - lastBroadcast > 2000) {
+      broadcastStatus();
+      lastBroadcast = millis();
+    }
+  }
+
+  // Update LED controller (needed for RGB LED timing)
+  ledController.loop();
 
   // Heartbeat - blink status LED every 5 seconds when idle
   static uint32_t lastHeartbeat = 0;

@@ -235,9 +235,39 @@ public:
 
   bool begin() {
     numConnected = 0;
-    Serial.println(F("Scanning for USB hubs..."));
+    Serial.println(F("========================================"));
+    Serial.println(F("I2C Hub Scanner Starting"));
+    Serial.print(F("I2C SDA Pin: GPIO"));
+    Serial.println(I2C_SDA);
+    Serial.print(F("I2C SCL Pin: GPIO"));
+    Serial.println(I2C_SCL);
+    Serial.println(F("Scanning I2C bus for all devices..."));
+
+    // First do a complete I2C bus scan
+    uint8_t deviceCount = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+      wire->beginTransmission(addr);
+      uint8_t error = wire->endTransmission();
+      if (error == 0) {
+        Serial.print(F("  Found device at 0x"));
+        if (addr < 16) Serial.print("0");
+        Serial.println(addr, HEX);
+        deviceCount++;
+      }
+    }
+    Serial.print(F("Total I2C devices found: "));
+    Serial.println(deviceCount);
+
+    Serial.println(F("----------------------------------------"));
+    Serial.println(F("Checking for USB hubs at expected addresses:"));
 
     for (uint8_t i = 0; i < MAX_HUBS; i++) {
+      Serial.print(F("  Testing hub "));
+      Serial.print(i + 1);
+      Serial.print(F(" at 0x"));
+      Serial.print(HUB_ADDRESSES[i], HEX);
+      Serial.print(F("... "));
+
       wire->beginTransmission(HUB_ADDRESSES[i]);
       wire->write(0x00);  // All ports off initially
       uint8_t error = wire->endTransmission();
@@ -245,14 +275,14 @@ public:
       if (error == 0) {
         connectedHubs[i] = 1;
         numConnected++;
-        Serial.print(F("  Hub "));
-        Serial.print(i + 1);
-        Serial.print(F(" at 0x"));
-        Serial.print(HUB_ADDRESSES[i], HEX);
-        Serial.print(F(" (ports "));
+        Serial.print(F("FOUND! (ports "));
         Serial.print(i * PORTS_PER_HUB + 1);
         Serial.print(F("-"));
         Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
+        Serial.println(F(")"));
+      } else {
+        Serial.print(F("Not found (error="));
+        Serial.print(error);
         Serial.println(F(")"));
       }
     }
@@ -579,23 +609,45 @@ public:
       return;
     }
 
-    Serial.print(F("Connecting to WiFi: "));
+    Serial.println(F("========================================"));
+    Serial.println(F("WiFi Connection"));
+    Serial.print(F("SSID: "));
     Serial.println(ssid);
+    Serial.print(F("Password: "));
+    Serial.println(strlen(pass) > 0 ? "****" : "(none)");
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, pass);
 
+    Serial.print(F("Connecting"));
     uint8_t attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts++ < 20) {
       esp_task_wdt_reset();  // Feed watchdog during WiFi connection
       delay(500);
       Serial.print(".");
+
+      // Print detailed status every 5 attempts
+      if (attempts % 5 == 0) {
+        Serial.print(F(" [Status: "));
+        Serial.print(WiFi.status());
+        Serial.print(F("]"));
+      }
     }
 
     if (WiFi.status() == WL_CONNECTED) {
       connected = true;
-      Serial.print(F("\nConnected! IP: "));
+      Serial.println(F("\n✓ WiFi Connected!"));
+      Serial.print(F("  IP Address: "));
       Serial.println(WiFi.localIP());
+      Serial.print(F("  Subnet Mask: "));
+      Serial.println(WiFi.subnetMask());
+      Serial.print(F("  Gateway: "));
+      Serial.println(WiFi.gatewayIP());
+      Serial.print(F("  DNS: "));
+      Serial.println(WiFi.dnsIP());
+      Serial.print(F("  RSSI: "));
+      Serial.print(WiFi.RSSI());
+      Serial.println(F(" dBm"));
 
       // Start mDNS
       if (MDNS.begin(config->getMDNS())) {
@@ -1161,7 +1213,7 @@ public:
 // MAIN PROGRAM
 // ============================================
 // Wire1 is predefined in ESP32 library
-HubController hubController(&Wire1);
+HubController hubController(&Wire);
 PinController pinController(BOOT_PIN, RESET_PIN);
 LEDController ledController(STATUS_LED, ACTIVITY_LED);
 ConfigManager configManager;
@@ -1186,20 +1238,26 @@ void IRAM_ATTR emergencyStopISR() {
 // WEB SERVER HANDLERS
 // ============================================
 void handleWebRoot() {
+  Serial.println(F("HTTP: Root page requested"));
   if (LittleFS.exists("/index.html")) {
+    Serial.println(F("  Serving index.html"));
     File file = LittleFS.open("/index.html", "r");
     webServer.streamFile(file, "text/html");
     file.close();
   } else {
+    Serial.println(F("  index.html not found, serving default"));
     webServer.send(200, "text/html", "<h1>USBFlashHub</h1><p>Upload index.html to LittleFS</p>");
   }
 }
 
 void handleWebNotFound() {
+  Serial.print(F("HTTP: 404 - "));
+  Serial.println(webServer.uri());
   webServer.send(404, "text/plain", "404: Not Found");
 }
 
 void handleWebStatus() {
+  Serial.println(F("HTTP: Status API requested"));
   StaticJsonDocument<1024> doc;
   doc["status"] = "ok";
   doc["uptime"] = millis();
@@ -1362,9 +1420,13 @@ void setup() {
   ledController.begin();
   ledController.flashActivity();
 
-  Serial.print(F("Initializing I2C... "));
-  Wire1.begin(I2C_SDA, I2C_SCL, 100000);
-  Serial.println(F("OK"));
+  Serial.println(F("Initializing I2C..."));
+  Serial.print(F("  Using Wire (primary I2C) on pins SDA="));
+  Serial.print(I2C_SDA);
+  Serial.print(F(", SCL="));
+  Serial.println(I2C_SCL);
+  Wire.begin(I2C_SDA, I2C_SCL, 100000);
+  Serial.println(F("  I2C initialized at 100kHz"));
 
   pinController.begin();
 
@@ -1399,26 +1461,47 @@ void setup() {
   Serial.println();
 
   // Initialize LittleFS for web files
+  Serial.println(F("\n========================================"));
+  Serial.println(F("Web Server Setup"));
+  Serial.print(F("WiFi Connected: "));
+  Serial.println(wifiManager.isConnected() ? "YES" : "NO");
+
   if (wifiManager.isConnected()) {
+    Serial.print(F("IP Address: "));
+    Serial.println(WiFi.localIP());
     Serial.print(F("Initializing LittleFS... "));
     if (!LittleFS.begin(true)) {
       Serial.println(F("Failed"));
+      Serial.println(F("WARNING: Web interface files not available"));
     } else {
       Serial.println(F("OK"));
 
+      // Check if index.html exists
+      if (LittleFS.exists("/index.html")) {
+        Serial.println(F("  index.html found"));
+      } else {
+        Serial.println(F("  WARNING: index.html not found"));
+      }
+
       // Setup web server routes
+      Serial.println(F("Configuring web server routes..."));
       webServer.on("/", handleWebRoot);
       webServer.on("/status", handleWebStatus);
       webServer.onNotFound(handleWebNotFound);
       webServer.begin();
-      Serial.println(F("Web server started on port 80"));
+      Serial.print(F("Web server started on port 80 at http://"));
+      Serial.print(WiFi.localIP());
+      Serial.println(F("/"));
 
       // Initialize WebSocket server
       wsServer.begin();
       wsServer.onEvent(webSocketEvent);
       Serial.println(F("WebSocket server started on port 81"));
     }
+  } else {
+    Serial.println(F("WARNING: WiFi not connected - web server disabled"));
   }
+  Serial.println(F("========================================\n"));
 
   activityLogger.log("system_start");
   processor.sendStatus();

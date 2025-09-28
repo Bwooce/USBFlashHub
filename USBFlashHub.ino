@@ -1483,20 +1483,31 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           serializeJson(status, msg);
           wsServer.sendTXT(num, msg);
         } else if (strcmp(action, "port") == 0) {
-          // Port command - send success with details
-          StaticJsonDocument<256> response;
-          response["status"] = "ok";
-          response["cmd"] = action;
+          // Port command - send full status update to all clients
+          delay(50); // Give hardware time to update
+
+          StaticJsonDocument<1024> status;
+          status["status"] = "ok";
+          status["uptime"] = millis();
+
+          // Add hubs info with updated states
+          JsonArray hubs = status.createNestedArray("hubs");
+          hubController.getStatus(status);
+
+          // Add network info
+          JsonObject network = status.createNestedObject("network");
+          network["ip"] = WiFi.localIP().toString();
+          network["connected"] = true;
+
+          // Add confirmation message
           uint8_t portNum = cmd["port"] | 0;
           const char* power = cmd["power"] | "unknown";
-          response["msg"] = String("Port ") + portNum + " set to " + power;
+          status["msg"] = String("Port ") + portNum + " set to " + power;
 
-          // Broadcast updated port state to all clients
-          broadcastStatus();
-
+          // Send full status to all connected clients
           String msg;
-          serializeJson(response, msg);
-          wsServer.sendTXT(num, msg);
+          serializeJson(status, msg);
+          wsServer.broadcastTXT(msg);  // Broadcast to all clients
         } else if (strcmp(action, "boot") == 0 || strcmp(action, "reset") == 0) {
           // Pin command - send success with details
           StaticJsonDocument<256> response;
@@ -1504,28 +1515,72 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           response["cmd"] = action;
 
           if (cmd.containsKey("pulse")) {
-            response["msg"] = String(action) + " pulse sent";
+            // For pulse command, send clear message
+            if (strcmp(action, "reset") == 0) {
+              response["msg"] = "Reset pulsed";
+            } else {
+              response["msg"] = "Boot pulsed";
+            }
           } else {
             bool state = cmd["state"] | false;
-            response["msg"] = String(action) + " pin set to " + (state ? "HIGH" : "LOW");
+            if (strcmp(action, "reset") == 0) {
+              response["msg"] = state ? "Reset released (HIGH)" : "Reset asserted (LOW)";
+            } else {
+              response["msg"] = state ? "Boot pin HIGH" : "Boot pin LOW";
+            }
           }
 
+          // Also send pin states update
+          JsonObject pins = response.createNestedObject("pins");
+          pins["boot"] = digitalRead(BOOT_PIN);
+          pins["reset"] = digitalRead(RESET_PIN);
+
           String msg;
           serializeJson(response, msg);
           wsServer.sendTXT(num, msg);
+        } else if (strcmp(action, "hub") == 0) {
+          // Hub command - send full status update to all clients
+          StaticJsonDocument<1024> status;
+          status["status"] = "ok";
+          status["uptime"] = millis();
+
+          // Add hubs info
+          JsonArray hubs = status.createNestedArray("hubs");
+          hubController.getStatus(status);
+
+          // Add network info
+          JsonObject network = status.createNestedObject("network");
+          network["ip"] = WiFi.localIP().toString();
+          network["connected"] = true;
+
+          // Send full status to all connected clients
+          String msg;
+          serializeJson(status, msg);
+          wsServer.broadcastTXT(msg);  // Broadcast to all clients
         } else if (strcmp(action, "alloff") == 0) {
-          // All off command
-          StaticJsonDocument<256> response;
-          response["status"] = "ok";
-          response["cmd"] = action;
-          response["msg"] = "All ports turned off";
+          // All off command - send full status update to all clients
+          delay(50); // Give hardware time to update
 
-          // Broadcast updated state
-          broadcastStatus();
+          StaticJsonDocument<1024> status;
+          status["status"] = "ok";
+          status["uptime"] = millis();
 
+          // Add hubs info with updated states
+          JsonArray hubs = status.createNestedArray("hubs");
+          hubController.getStatus(status);
+
+          // Add network info
+          JsonObject network = status.createNestedObject("network");
+          network["ip"] = WiFi.localIP().toString();
+          network["connected"] = true;
+
+          // Add confirmation message
+          status["msg"] = "All ports turned off";
+
+          // Send full status to all connected clients
           String msg;
-          serializeJson(response, msg);
-          wsServer.sendTXT(num, msg);
+          serializeJson(status, msg);
+          wsServer.broadcastTXT(msg);  // Broadcast to all clients
         } else {
           // Other commands - generic success
           StaticJsonDocument<256> response;
@@ -1557,7 +1612,11 @@ void broadcastStatus() {
 
   StaticJsonDocument<1024> doc;
 
-  // Add port states
+  // Add full hub information
+  JsonArray hubs = doc.createNestedArray("hubs");
+  hubController.getStatus(doc);
+
+  // Add port states (for backward compatibility)
   JsonObject ports = doc.createNestedObject("ports");
   for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
     uint8_t hubIndex, portIndex;

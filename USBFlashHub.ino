@@ -222,14 +222,16 @@ const uint8_t HUB_ADDRESSES[MAX_HUBS] = {
 class HubController {
 private:
   TwoWire* wire;
-  uint8_t hubStates[MAX_HUBS];
+  uint8_t hubStates[MAX_HUBS];  // Bit 0: current, Bit 3: LED, Bits 4-7: ports
+  uint8_t portPowerStates[TOTAL_PORTS];  // Track desired power level per port
   uint8_t connectedHubs[MAX_HUBS];  // Track which hubs are actually connected
   uint8_t numConnected;
   uint32_t lastActivity;
 
 public:
   HubController(TwoWire* i2c) : wire(i2c), lastActivity(0), numConnected(0) {
-    memset(hubStates, 0, sizeof(hubStates));
+    memset(hubStates, 0x01, sizeof(hubStates));  // Start with 100mA limit (bit 0 set)
+    memset(portPowerStates, POWER_OFF, sizeof(portPowerStates));
     memset(connectedHubs, 0, sizeof(connectedHubs));
   }
 
@@ -268,18 +270,23 @@ public:
       Serial.print(HUB_ADDRESSES[i], HEX);
       Serial.print(F("... "));
 
+      // Test if hub exists
       wire->beginTransmission(HUB_ADDRESSES[i]);
-      wire->write(0x00);  // All ports off initially
       uint8_t error = wire->endTransmission();
 
       if (error == 0) {
-        connectedHubs[i] = 1;
-        numConnected++;
-        Serial.print(F("FOUND! (ports "));
-        Serial.print(i * PORTS_PER_HUB + 1);
-        Serial.print(F("-"));
-        Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
-        Serial.println(F(")"));
+        // Initialize the hub with proper configuration
+        if (initializeHub(i)) {
+          connectedHubs[i] = 1;
+          numConnected++;
+          Serial.print(F("FOUND and initialized! (ports "));
+          Serial.print(i * PORTS_PER_HUB + 1);
+          Serial.print(F("-"));
+          Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
+          Serial.println(F(")"));
+        } else {
+          Serial.println(F("Found but init failed!"));
+        }
       } else {
         Serial.print(F("Not found (error="));
         Serial.print(error);
@@ -296,7 +303,59 @@ public:
     return numConnected > 0;
   }
 
-  // Set port by absolute port number (1-16)
+  // Initialize a single hub with proper configuration
+  bool initializeHub(uint8_t hubIndex) {
+    if (hubIndex >= MAX_HUBS) return false;
+
+    uint8_t addr = HUB_ADDRESSES[hubIndex];
+
+    // Set Configuration Register (all pins as outputs)
+    wire->beginTransmission(addr);
+    wire->write(0x03);  // Configuration register address
+    wire->write(0x00);  // Sets all pins as outputs
+    uint8_t error = wire->endTransmission();
+    if (error != 0) return false;
+
+    // Set Polarity Inversion Register (disable inversion)
+    wire->beginTransmission(addr);
+    wire->write(0x02);  // Polarity Inversion Register
+    wire->write(0x00);  // Disable inversion on all pins
+    wire->endTransmission();
+
+    // Set Output Control Register with initial state
+    // Bit 0: Current limit (1=100mA, 0=500mA) - start with 100mA
+    // Bit 3: LED control (0=off)
+    // Bits 4-7: Port control (0=all ports off)
+    hubStates[hubIndex] = 0x01;  // Bit 0 set for 100mA, all else off
+    wire->beginTransmission(addr);
+    wire->write(0x01);  // Output Control Register
+    wire->write(hubStates[hubIndex]);
+    wire->endTransmission();
+
+    // Port 4 defaults to on for some reason, make sure it's off
+    setPort(hubIndex, 3, false);  // Port 4 is index 3
+
+    // LEDs are controlled by bit 3, already off
+
+    return true;
+  }
+
+  // Set individual port on/off (internal helper)
+  void setPort(uint8_t hubIndex, uint8_t portIndex, bool enable) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
+    if (portIndex >= PORTS_PER_HUB) return;
+
+    // Ports are controlled by bits 4-7
+    uint8_t portBit = 4 + portIndex;
+    if (enable) {
+      hubStates[hubIndex] |= (1 << portBit);
+    } else {
+      hubStates[hubIndex] &= ~(1 << portBit);
+    }
+    updateHub(hubIndex);
+  }
+
+  // Set port by absolute port number (1-32)
   bool setPortByNumber(uint8_t portNum, uint8_t powerLevel) {
     if (portNum < 1 || portNum > TOTAL_PORTS) return false;
 
@@ -311,20 +370,12 @@ public:
       return false;
     }
 
-    // Update port state with power level (2 bits per port)
-    uint8_t portMask = 0x03 << (portIndex * 2);
-    uint8_t portValue = (powerLevel & 0x03) << (portIndex * 2);
+    // For this hardware, ports are either on or off
+    // Power level is controlled per-hub via bit 0
+    setPort(hubIndex, portIndex, powerLevel != POWER_OFF);
+    portPowerStates[portNum - 1] = powerLevel;  // Track desired power level
 
-    hubStates[hubIndex] = (hubStates[hubIndex] & ~portMask) | portValue;
-
-    bool success = updateHub(hubIndex);
-
-    // Update the LED for this port
-    if (success) {
-      updatePortLED(hubIndex, portIndex, powerLevel != POWER_OFF);
-    }
-
-    return success;
+    return true;
   }
 
   // Set all ports on a hub
@@ -343,14 +394,15 @@ public:
     return updateHub(hubIndex);
   }
 
-  // Turn all ports off
+  // Turn all ports and leds off, and go to 100mA
   void allOff() {
     for (uint8_t i = 0; i < MAX_HUBS; i++) {
       if (connectedHubs[i]) {
-        hubStates[i] = 0x00;
+        hubStates[i] = 0x01;  // Bit 0 set for 100mA, all ports/LED off
         updateHub(i);
       }
     }
+    memset(portPowerStates, POWER_OFF, sizeof(portPowerStates));
   }
 
   // Get hub state
@@ -359,14 +411,17 @@ public:
     return hubStates[hubNum - 1];
   }
 
-  // Get port power level
+  // Get port power level by absolute port number
   uint8_t getPortPower(uint8_t portNum) {
     if (portNum < 1 || portNum > TOTAL_PORTS) return 0;
+    return portPowerStates[portNum - 1];
+  }
 
-    uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
-    uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
-
-    return (hubStates[hubIndex] >> (portIndex * 2)) & 0x03;
+  // Check if port is enabled
+  bool isPortEnabled(uint8_t hubIndex, uint8_t portIndex) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return false;
+    uint8_t portBit = 4 + portIndex;
+    return (hubStates[hubIndex] & (1 << portBit)) != 0;
   }
 
   uint32_t getLastActivity() { return lastActivity; }
@@ -380,10 +435,17 @@ public:
     return connectedHubs[hubIndex];
   }
 
-  // Get power state of a specific port
-  uint8_t getPortState(uint8_t hubIndex, uint8_t portIndex) {
-    if (hubIndex >= MAX_HUBS || portIndex >= PORTS_PER_HUB) return POWER_OFF;
-    return (hubStates[hubIndex] >> (portIndex * 2)) & 0x03;
+  // Get LED state of a specific hub (bit 3 is LED control)
+  bool getHubLEDState(uint8_t hubIndex) {
+    if (hubIndex >= MAX_HUBS) return false;
+    return (hubStates[hubIndex] & 0x08) != 0;  // Bit 3
+  }
+
+  // Get power setting of a specific hub (bit 0 is power control)
+  bool getHubPowerHigh(uint8_t hubIndex) {
+    if (hubIndex >= MAX_HUBS) return false;
+    // Bit 0: 0=500mA (high), 1=100mA (low) - inverted logic
+    return !(hubStates[hubIndex] & 0x01);
   }
 
   // Get status of all ports
@@ -397,15 +459,46 @@ public:
         hub["addr"] = HUB_ADDRESSES[i];
         hub["state"] = hubStates[i];
 
+        // Add hub-level LED and power status
+        hub["led"] = getHubLEDState(i);
+        hub["power"] = getHubPowerHigh(i) ? "500mA" : "100mA";
+
         JsonArray ports = hub.createNestedArray("ports");
         for (uint8_t p = 0; p < PORTS_PER_HUB; p++) {
-          uint8_t power = (hubStates[i] >> (p * 2)) & 0x03;
           JsonObject port = ports.createNestedObject();
-          port["num"] = i * PORTS_PER_HUB + p + 1;
-          port["power"] = getPowerString(power);
+          uint8_t portNum = i * PORTS_PER_HUB + p + 1;
+          port["num"] = portNum;
+          port["enabled"] = isPortEnabled(i, p);
+          port["power"] = getPowerString(getPortPower(portNum));
         }
       }
     }
+  }
+
+  // Control LED for a hub on/off
+  void updateHubLED(uint8_t hubIndex, bool on) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
+
+    // Bit 3 controls LED
+    if (on) {
+      hubStates[hubIndex] |= 0x08;  // Set bit 3
+    } else {
+      hubStates[hubIndex] &= ~0x08;  // Clear bit 3
+    }
+    updateHub(hubIndex);
+  }
+
+  // Control Power level per Hub (100mA vs 500mA)
+  void updateHubPower(uint8_t hubIndex, bool high) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
+
+    // Bit 0 controls current limit: 0 = 500mA, 1 = 100mA (inverted logic)
+    if (high) {
+      hubStates[hubIndex] &= ~0x01;  // Clear bit 0 for 500mA
+    } else {
+      hubStates[hubIndex] |= 0x01;  // Set bit 0 for 100mA
+    }
+    updateHub(hubIndex);
   }
 
 private:
@@ -413,6 +506,7 @@ private:
     if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return false;
 
     wire->beginTransmission(HUB_ADDRESSES[hubIndex]);
+    wire->write(0b00000001); // Output port register
     wire->write(hubStates[hubIndex]);
     uint8_t error = wire->endTransmission();
 
@@ -421,31 +515,6 @@ private:
       return true;
     }
     return false;
-  }
-
-  // Control LED for individual port
-  void updatePortLED(uint8_t hubIndex, uint8_t portIndex, bool on) {
-    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
-
-    // Read current LED state from register 0x01
-    wire->beginTransmission(HUB_ADDRESSES[hubIndex]);
-    wire->write(0x01);  // Output port register
-    wire->endTransmission();
-
-    wire->requestFrom(HUB_ADDRESSES[hubIndex], (uint8_t)1);
-    if (wire->available()) {
-      uint8_t ledState = wire->read();
-
-      // Each port has its own LED bit (assuming bit 0-3 for ports 0-3)
-      // Bit 3 might be global LED control based on original code
-      bitWrite(ledState, portIndex, on ? 1 : 0);
-
-      // Write back the LED state
-      wire->beginTransmission(HUB_ADDRESSES[hubIndex]);
-      wire->write(0x01);  // Output port register
-      wire->write(ledState);
-      wire->endTransmission();
-    }
   }
 
   const char* getPowerString(uint8_t level) {
@@ -1050,11 +1119,33 @@ private:
   void handleHubCommand(JsonDocument& cmd) {
     uint8_t hubNum = cmd["hub"] | 0;
 
-    if (hubNum == 0) {
-      sendError("Missing hub number");
+    if (hubNum == 0 || hubNum > MAX_HUBS) {
+      sendError("Invalid hub number");
       return;
     }
 
+    uint8_t hubIndex = hubNum - 1;
+
+    // Handle LED control
+    if (cmd.containsKey("led")) {
+      bool ledOn = cmd["led"].as<bool>();
+      hub->updateHubLED(hubIndex, ledOn);
+      logger->log(ledOn ? "hub_led_on" : "hub_led_off", hubNum);
+      sendOK(ledOn ? "Hub LEDs turned on" : "Hub LEDs turned off");
+      return;
+    }
+
+    // Handle power control
+    if (cmd.containsKey("power")) {
+      const char* power = cmd["power"];
+      bool high = (strcmp(power, "500mA") == 0);
+      hub->updateHubPower(hubIndex, high);
+      logger->log(high ? "hub_power_500mA" : "hub_power_100mA", hubNum);
+      sendOK(high ? "Hub power set to 500mA" : "Hub power set to 100mA");
+      return;
+    }
+
+    // Handle raw state control (legacy)
     if (cmd.containsKey("state")) {
       uint8_t state = cmd["state"];
       if (hub->setHub(hubNum, state)) {
@@ -1070,6 +1161,8 @@ private:
       response["status"] = "ok";
       response["hub"] = hubNum;
       response["state"] = state;
+      response["led"] = hub->getHubLEDState(hubIndex);
+      response["power"] = hub->getHubPowerHigh(hubIndex) ? "500mA" : "100mA";
       serializeJson(response, Serial);
       Serial.println();
     }
@@ -1297,9 +1390,9 @@ void handleWebStatus() {
   // Add port states
   JsonObject ports = doc.createNestedObject("ports");
   for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
-    uint8_t hubNum, portNum;
-    if (hubController.getHubAndPort(i, hubNum, portNum)) {
-      uint8_t state = hubController.getPortState(hubNum, portNum);
+    uint8_t hubIndex, portIndex;
+    if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
+      uint8_t state = hubController.getPortPower(i);
       if (state == POWER_OFF) ports[String(i)] = "off";
       else if (state == POWER_100MA) ports[String(i)] = "100mA";
       else if (state == POWER_500MA) ports[String(i)] = "500mA";
@@ -1377,9 +1470,9 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           // Add ports info
           JsonObject ports = status.createNestedObject("ports");
           for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
-            uint8_t hubNum, portNum;
-            if (hubController.getHubAndPort(i, hubNum, portNum)) {
-              uint8_t state = hubController.getPortState(hubNum, portNum);
+            uint8_t hubIndex, portIndex;
+            if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
+              uint8_t state = hubController.getPortPower(i);
               if (state == POWER_OFF) ports[String(i)] = "off";
               else if (state == POWER_100MA) ports[String(i)] = "100mA";
               else if (state == POWER_500MA) ports[String(i)] = "500mA";
@@ -1467,9 +1560,9 @@ void broadcastStatus() {
   // Add port states
   JsonObject ports = doc.createNestedObject("ports");
   for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
-    uint8_t hubNum, portNum;
-    if (hubController.getHubAndPort(i, hubNum, portNum)) {
-      uint8_t state = hubController.getPortState(hubNum, portNum);
+    uint8_t hubIndex, portIndex;
+    if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
+      uint8_t state = hubController.getPortPower(i);
       if (state == POWER_OFF) ports[String(i)] = "off";
       else if (state == POWER_100MA) ports[String(i)] = "100mA";
       else if (state == POWER_500MA) ports[String(i)] = "500mA";

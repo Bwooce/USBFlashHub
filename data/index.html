@@ -175,6 +175,50 @@
             color: white;
         }
 
+        .btn-on {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .btn-active {
+            background: #2196F3;
+            color: white;
+            font-weight: bold;
+        }
+
+        .hub-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+        }
+
+        .hub-section h3 {
+            margin-top: 0;
+            color: #333;
+            font-size: 18px;
+        }
+
+        .hub-controls {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+        }
+
+        .hub-controls .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .hub-controls label {
+            font-weight: 500;
+            min-width: 100px;
+        }
+
         .control-section {
             margin-bottom: 20px;
         }
@@ -475,30 +519,42 @@
         }
 
         function setPort(port, power) {
-            sendCommand({ cmd: 'port', port: port, power: power });
+            if (sendCommand({ cmd: 'port', port: port, power: power })) {
+                addLog(`Setting port ${port} to ${power}...`, 'success');
+            } else {
+                addLog(`Failed to send port ${port} command - not connected`, 'error');
+            }
         }
 
         function setPinState(pin, state) {
-            sendCommand({ cmd: pin, state: state });
-            if (pin === 'boot') {
-                bootPinState = state;
-                document.getElementById('bootState').className = `pin-state ${state ? 'high' : 'low'}`;
-                document.getElementById('bootState').textContent = state ? 'HIGH' : 'LOW';
-            } else if (pin === 'reset') {
-                resetPinState = state;
-                document.getElementById('resetState').className = `pin-state ${state ? 'high' : 'low'}`;
-                document.getElementById('resetState').textContent = state ? 'HIGH' : 'LOW';
+            if (sendCommand({ cmd: pin, state: state })) {
+                // Update UI immediately but don't log - server will send confirmation
+                if (pin === 'boot') {
+                    bootPinState = state;
+                    document.getElementById('bootState').className = `pin-state ${state ? 'high' : 'low'}`;
+                    document.getElementById('bootState').textContent = state ? 'HIGH' : 'LOW';
+                } else if (pin === 'reset') {
+                    resetPinState = state;
+                    document.getElementById('resetState').className = `pin-state ${state ? 'high' : 'low'}`;
+                    document.getElementById('resetState').textContent = state ? 'HIGH' : 'LOW';
+                }
+            } else {
+                addLog(`Failed to send ${pin} command - not connected`, 'error');
             }
         }
 
         function pulseReset() {
+            // Don't log here - server will confirm
             sendCommand({ cmd: 'reset', pulse: 100 });
-            addLog('Reset pulse sent (100ms)', 'success');
         }
 
         function allOff() {
             if (confirm('Turn off all ports?')) {
-                sendCommand({ cmd: 'alloff' });
+                if (sendCommand({ cmd: 'alloff' })) {
+                    addLog('Turning off all ports...', 'success');
+                } else {
+                    addLog('Failed to send all off command - not connected', 'error');
+                }
             }
         }
 

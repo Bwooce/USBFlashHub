@@ -1389,8 +1389,52 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           String msg;
           serializeJson(status, msg);
           wsServer.sendTXT(num, msg);
+        } else if (strcmp(action, "port") == 0) {
+          // Port command - send success with details
+          StaticJsonDocument<256> response;
+          response["status"] = "ok";
+          response["cmd"] = action;
+          uint8_t portNum = cmd["port"] | 0;
+          const char* power = cmd["power"] | "unknown";
+          response["msg"] = String("Port ") + portNum + " set to " + power;
+
+          // Broadcast updated port state to all clients
+          broadcastStatus();
+
+          String msg;
+          serializeJson(response, msg);
+          wsServer.sendTXT(num, msg);
+        } else if (strcmp(action, "boot") == 0 || strcmp(action, "reset") == 0) {
+          // Pin command - send success with details
+          StaticJsonDocument<256> response;
+          response["status"] = "ok";
+          response["cmd"] = action;
+
+          if (cmd.containsKey("pulse")) {
+            response["msg"] = String(action) + " pulse sent";
+          } else {
+            bool state = cmd["state"] | false;
+            response["msg"] = String(action) + " pin set to " + (state ? "HIGH" : "LOW");
+          }
+
+          String msg;
+          serializeJson(response, msg);
+          wsServer.sendTXT(num, msg);
+        } else if (strcmp(action, "alloff") == 0) {
+          // All off command
+          StaticJsonDocument<256> response;
+          response["status"] = "ok";
+          response["cmd"] = action;
+          response["msg"] = "All ports turned off";
+
+          // Broadcast updated state
+          broadcastStatus();
+
+          String msg;
+          serializeJson(response, msg);
+          wsServer.sendTXT(num, msg);
         } else {
-          // Echo success for other commands
+          // Other commands - generic success
           StaticJsonDocument<256> response;
           response["status"] = "ok";
           response["cmd"] = action;

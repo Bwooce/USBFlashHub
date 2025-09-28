@@ -146,6 +146,7 @@
   // S3-Zero has onboard WS2812 RGB LED
   #define RGB_LED_PIN 21
   #define RGB_LED_COUNT 1
+  #define RGB_LED_BRIGHTNESS 50
   #define USE_RGB_LED
   // Dummy pins for compatibility (not used with RGB LED)
   #define STATUS_LED 255
@@ -178,15 +179,24 @@
 #define GMT_OFFSET_SEC 0
 #define DAYLIGHT_OFFSET_SEC 0
 
-// Watchdog Configuration
-#define WDT_TIMEOUT 10  // 10 seconds watchdog timeout
+// Timing Configuration
+#define WDT_TIMEOUT         10    // 10 seconds watchdog timeout
+#define ACTIVITY_FLASH_MS   50    // Activity LED flash duration
+#define ERROR_FLASH_MS      100   // Error pattern flash duration
+#define RESET_PULSE_MS      100   // Default reset pulse duration
+#define RECONNECT_DELAY_MS  30000 // WiFi reconnect delay
+#define HEARTBEAT_INTERVAL  5000  // Status LED heartbeat interval
+#define BROADCAST_INTERVAL  2000  // WebSocket broadcast interval
 
 // ============================================
 // USB HUB CONFIGURATION
 // ============================================
 // Hardcoded hub addresses for consistent port numbering
 // Port numbering: Hub 1 = ports 1-4, Hub 2 = ports 5-8, etc.
-#define MAX_HUBS      8   // Configure based on your setup
+#define MAX_HUBS          8   // Number of USB hubs in the system
+#define PORTS_PER_HUB     4   // Each hub controls 4 ports
+#define TOTAL_PORTS       (MAX_HUBS * PORTS_PER_HUB)  // Calculate total ports
+
 const uint8_t HUB_ADDRESSES[MAX_HUBS] = {
   0x18,  // Hub 1: ports 1-4
   0x19,  // Hub 2: ports 5-8
@@ -240,9 +250,9 @@ public:
         Serial.print(F(" at 0x"));
         Serial.print(HUB_ADDRESSES[i], HEX);
         Serial.print(F(" (ports "));
-        Serial.print(i * 4 + 1);
+        Serial.print(i * PORTS_PER_HUB + 1);
         Serial.print(F("-"));
-        Serial.print(i * 4 + 4);
+        Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
         Serial.println(F(")"));
       }
     }
@@ -258,11 +268,11 @@ public:
 
   // Set port by absolute port number (1-16)
   bool setPortByNumber(uint8_t portNum, uint8_t powerLevel) {
-    if (portNum < 1 || portNum > (MAX_HUBS * 4)) return false;
+    if (portNum < 1 || portNum > TOTAL_PORTS) return false;
 
     // Calculate hub and port from absolute port number
-    uint8_t hubIndex = (portNum - 1) / 4;
-    uint8_t portIndex = (portNum - 1) % 4;
+    uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
+    uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
 
     if (!connectedHubs[hubIndex]) {
       Serial.print(F("Hub "));
@@ -314,10 +324,10 @@ public:
 
   // Get port power level
   uint8_t getPortPower(uint8_t portNum) {
-    if (portNum < 1 || portNum > (MAX_HUBS * 4)) return 0;
+    if (portNum < 1 || portNum > TOTAL_PORTS) return 0;
 
-    uint8_t hubIndex = (portNum - 1) / 4;
-    uint8_t portIndex = (portNum - 1) % 4;
+    uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
+    uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
 
     return (hubStates[hubIndex] >> (portIndex * 2)) & 0x03;
   }
@@ -327,15 +337,15 @@ public:
 
   // Convert absolute port number to hub and port indices
   bool getHubAndPort(uint8_t portNum, uint8_t& hubIndex, uint8_t& portIndex) {
-    if (portNum < 1 || portNum > (MAX_HUBS * 4)) return false;
-    hubIndex = (portNum - 1) / 4;
-    portIndex = (portNum - 1) % 4;
+    if (portNum < 1 || portNum > TOTAL_PORTS) return false;
+    hubIndex = (portNum - 1) / PORTS_PER_HUB;
+    portIndex = (portNum - 1) % PORTS_PER_HUB;
     return connectedHubs[hubIndex];
   }
 
   // Get power state of a specific port
   uint8_t getPortState(uint8_t hubIndex, uint8_t portIndex) {
-    if (hubIndex >= MAX_HUBS || portIndex >= 4) return POWER_OFF;
+    if (hubIndex >= MAX_HUBS || portIndex >= PORTS_PER_HUB) return POWER_OFF;
     return (hubStates[hubIndex] >> (portIndex * 2)) & 0x03;
   }
 
@@ -351,10 +361,10 @@ public:
         hub["state"] = hubStates[i];
 
         JsonArray ports = hub.createNestedArray("ports");
-        for (uint8_t p = 0; p < 4; p++) {
+        for (uint8_t p = 0; p < PORTS_PER_HUB; p++) {
           uint8_t power = (hubStates[i] >> (p * 2)) & 0x03;
           JsonObject port = ports.createNestedObject();
-          port["num"] = i * 4 + p + 1;
+          port["num"] = i * PORTS_PER_HUB + p + 1;
           port["power"] = getPowerString(power);
         }
       }
@@ -608,7 +618,7 @@ public:
     if (!config->isWiFiEnabled()) return;
 
     // Auto-reconnect
-    if (!connected && millis() - lastReconnect > 30000) {
+    if (!connected && millis() - lastReconnect > RECONNECT_DELAY_MS) {
       lastReconnect = millis();
       esp_task_wdt_reset();  // Feed watchdog before reconnect attempt
       begin();
@@ -651,7 +661,7 @@ public:
     // Initialize RGB LED for S3-Zero
     rgbLed = new Adafruit_NeoPixel(RGB_LED_COUNT, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
     rgbLed->begin();
-    rgbLed->setBrightness(50);  // Not too bright
+    rgbLed->setBrightness(RGB_LED_BRIGHTNESS);  // Not too bright
     setRGBStatus(true);  // Green for status on
 #else
     // Standard GPIO LEDs
@@ -713,7 +723,7 @@ public:
 #endif
   }
 
-  void flashActivity(uint32_t ms = 50) {
+  void flashActivity(uint32_t ms = ACTIVITY_FLASH_MS) {
 #ifdef USE_RGB_LED
     flashRGBActivity();
 #else
@@ -735,19 +745,19 @@ public:
 #ifdef USE_RGB_LED
     for (int i = 0; i < 3; i++) {
       setRGBColor(25, 0, 0);  // Red for error
-      delay(100);
+      delay(ERROR_FLASH_MS);
       setRGBColor(0, 0, 0);   // Off
-      delay(100);
+      delay(ERROR_FLASH_MS);
     }
     setRGBStatus(statusState);  // Return to normal
 #else
     for (int i = 0; i < 3; i++) {
       setStatus(true);
       setActivity(true);
-      delay(100);
+      delay(ERROR_FLASH_MS);
       setStatus(false);
       setActivity(false);
-      delay(100);
+      delay(ERROR_FLASH_MS);
     }
 #endif
   }
@@ -1139,9 +1149,9 @@ public:
       Serial.print(F("  Hub "));
       Serial.print(i + 1);
       Serial.print(F(": ports "));
-      Serial.print(i * 4 + 1);
+      Serial.print(i * PORTS_PER_HUB + 1);
       Serial.print(F("-"));
-      Serial.println(i * 4 + 4);
+      Serial.println(i * PORTS_PER_HUB + PORTS_PER_HUB);
     }
     Serial.println(F("==============================\n"));
   }
@@ -1196,7 +1206,7 @@ void handleWebStatus() {
 
   // Add port states
   JsonObject ports = doc.createNestedObject("ports");
-  for (uint8_t i = 1; i <= 32; i++) {
+  for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
     uint8_t hubNum, portNum;
     if (hubController.getHubAndPort(i, hubNum, portNum)) {
       uint8_t state = hubController.getPortState(hubNum, portNum);
@@ -1278,7 +1288,7 @@ void broadcastStatus() {
 
   // Add port states
   JsonObject ports = doc.createNestedObject("ports");
-  for (uint8_t i = 1; i <= 32; i++) {
+  for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
     uint8_t hubNum, portNum;
     if (hubController.getHubAndPort(i, hubNum, portNum)) {
       uint8_t state = hubController.getPortState(hubNum, portNum);
@@ -1448,7 +1458,7 @@ void loop() {
 
     // Broadcast status updates periodically
     static uint32_t lastBroadcast = 0;
-    if (millis() - lastBroadcast > 2000) {
+    if (millis() - lastBroadcast > BROADCAST_INTERVAL) {
       broadcastStatus();
       lastBroadcast = millis();
     }
@@ -1459,7 +1469,7 @@ void loop() {
 
   // Heartbeat - blink status LED every 5 seconds when idle
   static uint32_t lastHeartbeat = 0;
-  if (millis() - lastHeartbeat > 5000) {
+  if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL) {
     ledController.blinkStatus();
     lastHeartbeat = millis();
     // Watchdog is fed at top of loop, so no need here

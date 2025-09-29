@@ -19,30 +19,61 @@ def detect_and_activate_ports(host="usbhub.local", power="500mA", with_leds=True
         ws.connect(f'ws://{host}:81')
         print(f'Connected to USBFlashHub at {host}')
 
-        # Detect active hubs by trying to control them
-        # Based on observation: 3 hubs are connected (ports 1-12)
+        # Request status to detect actual connected hubs
+        print('Detecting connected hubs...')
+        cmd = {'cmd': 'status'}
+        ws.send(json.dumps(cmd))
+
+        # Wait for responses (first is connection confirm, second is actual status)
+        ws.settimeout(1.0)
+
+        # Skip the connection confirmation
+        try:
+            ws.recv()  # Discard "connected" message
+        except:
+            pass
+
+        # Get the actual status
+        try:
+            response = ws.recv()
+            status = json.loads(response)
+        except Exception as e:
+            print(f'Could not get status: {e}')
+            # Fallback to trying all ports
+            status = None
+
         active_hubs = []
         active_ports = []
 
-        print('Detecting active hubs...')
-
-        # Probe each potential hub (max 8 hubs, 4 ports each)
-        for hub_num in range(1, 9):
-            hub_start = (hub_num - 1) * 4 + 1
-            hub_end = hub_num * 4
-
-            # Try to turn on the first port of each hub to test if it exists
-            test_port = hub_start
-
-            # For now, assume first 3 hubs based on your observation
-            # In a real implementation, we'd check the response
-            if hub_num <= 3:
+        if status and 'hubs' in status:
+            # Parse the actual connected hubs from status
+            for hub in status['hubs']:
+                hub_num = hub['num']
                 active_hubs.append(hub_num)
-                for port in range(hub_start, hub_end + 1):
-                    active_ports.append(port)
-                print(f'  Hub {hub_num}: Ports {hub_start}-{hub_end} ✓')
 
-        print(f'\nFound {len(active_hubs)} hubs with {len(active_ports)} total ports')
+                # Get the ports for this hub
+                if 'ports' in hub:
+                    for port in hub['ports']:
+                        port_num = port['num']
+                        # Adjust for absolute port numbering
+                        absolute_port = (hub_num - 1) * 4 + port_num
+                        active_ports.append(absolute_port)
+                else:
+                    # If no port details, assume all 4 ports
+                    for i in range(4):
+                        active_ports.append((hub_num - 1) * 4 + i + 1)
+
+                hub_start = (hub_num - 1) * 4 + 1
+                hub_end = hub_num * 4
+                print(f'  Hub {hub_num} (0x{hub["addr"]:02X}): Ports {hub_start}-{hub_end} ✓')
+
+        else:
+            # Fallback: try all possible ports
+            print('Could not detect hubs from status, trying all possible ports...')
+            active_hubs = list(range(1, 9))
+            active_ports = list(range(1, 33))
+
+        print(f'\nDetected {len(active_hubs)} hub(s) with {len(active_ports)} total port(s)')
 
         # Turn on all detected ports
         print(f'\nTurning on all ports at {power}...')

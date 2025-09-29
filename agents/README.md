@@ -34,13 +34,13 @@ python3 turn_on_all_ports.py --ports 1-4         # Port range
 python3 turn_on_all_ports.py --host 192.168.1.100 # Use IP instead of mDNS
 ```
 
-**One-Liner for Connected Ports** (turns on ports 1-12 with LEDs):
+**One-Liner for All Possible Ports** (attempts all 32 ports with LEDs):
 ```bash
-# Ports 1-12 (3 hubs) with LEDs - based on typical setup
-python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,13)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) or time.sleep(0.02) for h in range(1,4)]; print('Ports 1-12 ON with LEDs')"
+# Try all possible ports (1-32) and hubs (1-8) with LEDs
+python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,33)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) or time.sleep(0.02) for h in range(1,9)]; print('All ports attempted with LEDs')"
 ```
 
-**Note**: The USBFlashHub hardware typically has 3 active hubs (ports 1-12) even though the software supports up to 8 hubs (32 ports). The script automatically detects what's actually connected.
+**Note**: The software supports up to 8 hubs (32 ports total). The script will attempt to control all possible ports - actual hardware will only respond for connected hubs.
 
 ## Overview
 

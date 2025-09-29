@@ -101,21 +101,20 @@ POWER_500MA: 0x03 (USB 2.0 high power, default)
 
 ### Important Hardware Notes
 
-**Actual Hardware Configuration:**
-- Typically 3 hubs are physically connected (not all 8 software-supported hubs)
-- This provides ports 1-12 (3 hubs × 4 ports each)
-- Only 4 ports may be physically populated with USB connectors
+**Hardware Configuration:**
+- Software supports up to 8 hubs (32 ports total: 8 hubs × 4 ports each)
+- Actual connected hardware varies by build
 - LEDs are controlled per-hub, not per-port
 - Always turn on LEDs when activating ports for visual feedback
 
-**Quick Turn On All Connected Ports:**
+**Quick Turn On All Ports:**
 ```bash
 # Smart script that detects actual hardware
 cd agents
 python3 turn_on_all_ports.py
 
-# One-liner for typical 3-hub setup (ports 1-12 with LEDs)
-python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,13)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) for h in range(1,4)]; print('Done')"
+# One-liner to attempt all possible ports and hubs with LEDs
+python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,33)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) for h in range(1,9)]; print('Done')"
 ```
 
 ### Port Control

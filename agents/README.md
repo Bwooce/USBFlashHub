@@ -2,6 +2,32 @@
 
 A comprehensive Python-based system for the USBFlashHub that provides both automated testing and interactive control capabilities through two complementary agents.
 
+## Quick Connect Guide
+
+The USBFlashHub uses mDNS hostname `usbhub.local` (default). If mDNS doesn't work, use the IP address.
+
+### Find Your Hub
+```bash
+# Try mDNS first
+curl http://usbhub.local/
+
+# If that fails, get IP from serial console
+screen /dev/ttyACM0 115200
+# Look for "IP: 192.168.x.x"
+
+# Or scan your network
+nmap -p 80 192.168.1.0/24 | grep -B2 "80/tcp open"
+```
+
+### Turn On All USB Ports (One-Liner)
+```bash
+# Using mDNS
+python3 -c "import websocket,json; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) for p in range(1,33)]; print('All ports ON')"
+
+# Using IP (replace with your hub's IP)
+python3 -c "import websocket,json; ws=websocket.WebSocket(); ws.connect('ws://192.168.1.100:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) for p in range(1,33)]; print('All ports ON')"
+```
+
 ## Overview
 
 This system consists of two main Python agents:

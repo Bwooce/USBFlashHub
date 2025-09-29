@@ -121,7 +121,7 @@ class DeviceRule:
 class USBHubController:
     """WebSocket controller for USBFlashHub communication"""
 
-    def __init__(self, host: str = "localhost", port: int = 81):
+    def __init__(self, host: str = "usbhub.local", port: int = 81):
         self.host = host
         self.port = port
         self.ws = None
@@ -770,7 +770,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="USBFlashHub Testing Automation Agent")
     parser.add_argument("--config", default="test_rules.yaml", help="Configuration file")
-    parser.add_argument("--host", default="localhost", help="USBFlashHub host")
+    parser.add_argument("--host", default="usbhub.local", help="USBFlashHub host (mDNS hostname or IP)")
     parser.add_argument("--port", type=int, default=81, help="USBFlashHub WebSocket port")
     parser.add_argument("--report-interval", type=int, default=300, help="Report interval in seconds")
 

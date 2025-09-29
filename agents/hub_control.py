@@ -394,7 +394,7 @@ class DeviceDatabase:
 class HubController:
     """Core hub control functionality with WebSocket communication"""
 
-    def __init__(self, host: str = "localhost", port: int = 81, config: Dict = None):
+    def __init__(self, host: str = "usbhub.local", port: int = 81, config: Dict = None):
         self.host = host
         self.port = port
         self.config = config or {}
@@ -1201,7 +1201,7 @@ def main():
     parser = argparse.ArgumentParser(description="USBFlashHub Control Agent")
     parser.add_argument("--config", default="/home/bruce/Arduino/USBFlashHub/agents/hub_config.yaml",
                        help="Configuration file")
-    parser.add_argument("--host", default="localhost", help="Hub host")
+    parser.add_argument("--host", default="usbhub.local", help="Hub host (mDNS hostname or IP)")
     parser.add_argument("--port", type=int, default=81, help="Hub WebSocket port")
     parser.add_argument("--mode", choices=["cli", "dashboard", "api"], default="cli",
                        help="Operation mode")

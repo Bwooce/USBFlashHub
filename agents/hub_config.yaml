@@ -2,7 +2,7 @@
 
 # Hub connection settings
 hub:
-  host: localhost
+  host: usbhub.local  # mDNS hostname (can also use IP address)
   port: 81
   timeout: 5.0
   max_hubs: 8  # Maximum number of hubs supported (1-8)

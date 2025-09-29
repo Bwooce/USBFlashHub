@@ -1,0 +1,233 @@
+# USBFlashHub Control Agent Configuration
+
+# Hub connection settings
+hub:
+  host: localhost
+  port: 81
+  timeout: 5.0
+  max_hubs: 8  # Maximum number of hubs supported (1-8)
+
+# Database settings
+database:
+  path: "/home/bruce/Arduino/USBFlashHub/agents/devices.db"
+  backup_interval: 24  # hours
+  cleanup_after_days: 90  # Clean old test history
+
+# Device type recognition
+device_types:
+  # ESP32 variants
+  "303a:1001": "ESP32-S2"
+  "303a:0002": "ESP32-S2"
+  "303a:1000": "ESP32"
+  "303a:80d4": "ESP32-C3"
+  "303a:4001": "ESP32-S3"
+
+  # STM32 variants
+  "0483:df11": "STM32-DFU"
+  "0483:5740": "STM32"
+  "0483:374b": "STM32-F4"
+
+  # Arduino variants
+  "2341:0043": "Arduino-Uno"
+  "2341:0001": "Arduino-Uno"
+  "2341:8036": "Arduino-Leonardo"
+
+  # USB-Serial chips
+  "1a86:7523": "CH340-Serial"
+  "0403:6001": "FTDI-Serial"
+  "10c4:ea60": "CP210x-Serial"
+
+# Port mapping and groups
+port_groups:
+  esp32_dev:
+    description: "ESP32 Development Ports"
+    ports: [1, 2, 3, 4]
+    default_power: "500mA"
+
+  stm32_dev:
+    description: "STM32 Development Ports"
+    ports: [5, 6, 7, 8]
+    default_power: "500mA"
+
+  testing:
+    description: "Automated Testing Ports"
+    ports: [9, 10, 11, 12]
+    default_power: "100mA"
+
+  production:
+    description: "Production Programming"
+    ports: [13, 14, 15, 16]
+    default_power: "500mA"
+
+# Bootloader sequences for different device types
+bootloader_sequences:
+  ESP32:
+    method: "boot_reset"
+    steps:
+      - action: "set_boot_pin"
+        state: true
+        delay: 0.1
+      - action: "pulse_reset"
+        duration: 100
+        delay: 0.5
+      - action: "set_boot_pin"
+        state: false
+
+  ESP32-C3:
+    method: "boot_reset"
+    steps:
+      - action: "set_boot_pin"
+        state: true
+        delay: 0.1
+      - action: "pulse_reset"
+        duration: 100
+        delay: 0.5
+      - action: "set_boot_pin"
+        state: false
+
+  STM32:
+    method: "dfu"
+    steps:
+      - action: "set_boot_pin"  # BOOT0 high for DFU
+        state: true
+        delay: 0.1
+      - action: "pulse_reset"
+        duration: 100
+        delay: 0.2
+
+  Arduino:
+    method: "reset_only"
+    steps:
+      - action: "pulse_reset"
+        duration: 250
+
+# Power management settings
+power:
+  default_level: "500mA"
+  power_cycle_delay: 1.0  # seconds
+  startup_delay: 2.0      # seconds after power on
+
+  # Power limits per hub
+  hub_limits:
+    total_power: "2A"      # Total power budget per hub
+    port_power: "500mA"    # Max power per port
+
+# Automation settings
+automation:
+  script_directory: "/home/bruce/Arduino/USBFlashHub/agents/automation_scripts"
+  timeout: 300  # Script timeout in seconds
+  parallel_limit: 4  # Max parallel operations
+
+  # Pre-defined automation sequences
+  sequences:
+    power_cycle_all:
+      description: "Power cycle all active ports"
+      timeout: 30
+
+    esp32_program_all:
+      description: "Program all ESP32 devices"
+      timeout: 600
+
+    factory_reset:
+      description: "Factory reset sequence"
+      timeout: 120
+
+# Dashboard settings
+dashboard:
+  refresh_rate: 1.0  # Hz
+  max_devices_shown: 20
+  max_history_shown: 100
+
+  # Color scheme
+  colors:
+    connected: "green"
+    disconnected: "red"
+    powered: "yellow"
+    unpowered: "dim"
+    active: "bright_blue"
+
+# REST API settings
+api:
+  enabled: false
+  port: 5000
+  host: "0.0.0.0"
+  cors_enabled: true
+
+  # Rate limiting
+  rate_limit: "100/minute"
+
+  # Authentication (if needed)
+  auth:
+    enabled: false
+    api_key: ""
+
+# Logging settings
+logging:
+  level: "INFO"
+  file: "/home/bruce/Arduino/USBFlashHub/agents/hub_control.log"
+  max_size: "10MB"
+  backup_count: 5
+
+  # Log categories
+  categories:
+    hub_communication: "INFO"
+    device_detection: "INFO"
+    database: "INFO"
+    automation: "INFO"
+    api: "INFO"
+
+# Integration with testing agent
+testing_agent:
+  enabled: true
+  share_database: true
+  sync_device_info: true
+
+  # Test result integration
+  auto_record_results: true
+  result_webhook: ""
+
+# Safety settings
+safety:
+  emergency_stop_enabled: true
+  power_limit_enforcement: true
+  overcurrent_protection: true
+
+  # Limits
+  max_power_on_time: 3600  # seconds
+  max_continuous_operations: 100
+  cooldown_period: 30      # seconds
+
+# Firmware management (future feature)
+firmware:
+  repository: "/home/bruce/Arduino/USBFlashHub/firmware"
+  auto_detect_version: true
+  verify_after_flash: true
+
+  # Default firmware files
+  defaults:
+    ESP32: "esp32_default.bin"
+    ESP32-S2: "esp32s2_default.bin"
+    ESP32-S3: "esp32s3_default.bin"
+    ESP32-C3: "esp32c3_default.bin"
+    STM32: "stm32_default.hex"
+
+# Notification settings (future feature)
+notifications:
+  enabled: false
+
+  # Notification channels
+  email:
+    enabled: false
+    smtp_server: ""
+    recipients: []
+
+  webhook:
+    enabled: false
+    url: ""
+
+  # Events to notify about
+  events:
+    - device_connected
+    - test_failed
+    - power_limit_exceeded
+    - hub_disconnected

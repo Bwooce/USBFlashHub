@@ -1,0 +1,18 @@
+# USBFlashHub Python Agents Dependencies
+
+# Core dependencies (required for both agents)
+PyYAML>=6.0
+pyudev>=0.24.0
+websocket-client>=1.6.0
+
+# Hub Control Agent dependencies
+rich>=13.0.0                # Rich terminal displays and dashboard
+flask>=2.3.0                # REST API server (optional)
+flask-cors>=4.0.0           # CORS support for API (optional)
+
+# Device programming tools
+esptool>=4.5.0              # For ESP32 device programming
+pyserial>=3.5               # For serial communication
+
+# Note: dfu-util is a system package, install with:
+# sudo apt install dfu-util

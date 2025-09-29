@@ -84,6 +84,13 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+
+// USB configuration for ESP32-S2/S3 with native USB
+#if defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
+  #if ARDUINO_USB_MODE
+    #include <USB.h>
+  #endif
+#endif
 #include <Preferences.h>
 #include <time.h>
 #include <esp_task_wdt.h>
@@ -96,6 +103,15 @@
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
   #include <Adafruit_NeoPixel.h>
 #endif
+
+// ============================================
+// USB Device Configuration
+// ============================================
+// Customize these values to identify your specific hub
+// These are used when the ESP32-S2/S3 appears as a USB device
+#define USB_MANUFACTURER_NAME "USBFlashHub Project"
+#define USB_PRODUCT_NAME      "Hub Controller"
+#define USB_SERIAL_PREFIX     "HUBCTL_"  // Will append MAC address for uniqueness
 
 // ============================================
 // Board Detection and Pin Assignments
@@ -1868,6 +1884,27 @@ void broadcastStatus() {
 }
 
 void setup() {
+  // Configure USB device identification for ESP32-S2/S3
+  #if defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
+    #if ARDUINO_USB_MODE
+      // Set custom USB device descriptors
+      USB.manufacturerName(USB_MANUFACTURER_NAME);
+      USB.productName(USB_PRODUCT_NAME);
+
+      // Generate unique serial number based on MAC address
+      uint8_t mac[6];
+      WiFi.macAddress(mac);
+      char serialNum[32];
+      snprintf(serialNum, sizeof(serialNum), "%s%02X%02X%02X%02X%02X%02X",
+               USB_SERIAL_PREFIX,
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      USB.serialNumber(serialNum);
+
+      USB.begin();
+      delay(100);  // Give USB time to initialize
+    #endif
+  #endif
+
   Serial.begin(115200);
 
   // Wait for serial or timeout

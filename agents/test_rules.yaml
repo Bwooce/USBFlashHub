@@ -1,0 +1,240 @@
+# USBFlashHub Testing Agent Configuration
+# This file defines test rules for different device types
+
+rules:
+  # Rule for ESP32-S3 devices
+  - name: "ESP32-S3 Complete Test"
+    device_filter:
+      device_type: "ESP32.*S3"  # Regex pattern
+      vendor_id: "303a"         # Espressif VID
+    steps:
+      - action: "power_on"
+        params:
+          port: "auto"
+          power_level: "500mA"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 10
+        timeout: 15.0
+
+      - action: "enter_bootloader"
+        params:
+          method: "boot_reset"
+        timeout: 5.0
+
+      - action: "flash_firmware"
+        params:
+          file: "/home/bruce/Arduino/USBFlashHub/test_firmware/esp32s3_test.bin"
+          tool: "esptool"
+        timeout: 60.0
+        retry_count: 1
+
+      - action: "reset_device"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 10
+        timeout: 15.0
+
+      - action: "run_test"
+        params:
+          script: "/home/bruce/Arduino/USBFlashHub/test_scripts/esp32_wifi_test.py"
+        timeout: 30.0
+
+      - action: "power_off"
+        timeout: 5.0
+
+  # Rule for ESP32-S2 devices
+  - name: "ESP32-S2 Flash Test"
+    device_filter:
+      device_type: "ESP32.*S2"
+      vendor_id: "303a"
+    steps:
+      - action: "power_on"
+        params:
+          port: "auto"
+          power_level: "500mA"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 10
+        timeout: 15.0
+
+      - action: "enter_bootloader"
+        params:
+          method: "boot_reset"
+        timeout: 5.0
+
+      - action: "flash_firmware"
+        params:
+          file: "/home/bruce/Arduino/USBFlashHub/test_firmware/esp32s2_blink.bin"
+          tool: "esptool"
+        timeout: 60.0
+
+      - action: "reset_device"
+        timeout: 5.0
+
+      - action: "run_test"
+        params:
+          script: "/home/bruce/Arduino/USBFlashHub/test_scripts/blink_test.py"
+        timeout: 20.0
+
+      - action: "power_off"
+        timeout: 5.0
+
+  # Rule for ESP32-C3 devices
+  - name: "ESP32-C3 Quick Test"
+    device_filter:
+      device_type: "ESP32.*C3"
+      vendor_id: "303a"
+    steps:
+      - action: "power_on"
+        params:
+          port: "auto"
+          power_level: "500mA"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 8
+        timeout: 10.0
+
+      - action: "enter_bootloader"
+        params:
+          method: "boot_reset"
+        timeout: 5.0
+
+      - action: "flash_firmware"
+        params:
+          file: "/home/bruce/Arduino/USBFlashHub/test_firmware/esp32c3_hello.bin"
+          tool: "esptool"
+        timeout: 45.0
+
+      - action: "reset_device"
+        timeout: 5.0
+
+      - action: "power_off"
+        timeout: 5.0
+
+  # Rule for STM32 devices in DFU mode
+  - name: "STM32 DFU Flash Test"
+    device_filter:
+      device_type: "STM32.*DFU"
+      vendor_id: "0483"
+    steps:
+      - action: "power_on"
+        params:
+          port: "auto"
+          power_level: "500mA"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 5
+        timeout: 10.0
+
+      - action: "flash_firmware"
+        params:
+          file: "/home/bruce/Arduino/USBFlashHub/test_firmware/stm32_blink.bin"
+          tool: "dfu-util"
+        timeout: 30.0
+
+      - action: "reset_device"
+        timeout: 5.0
+
+      - action: "power_off"
+        timeout: 5.0
+
+  # Rule for STM32 devices requiring DFU mode entry
+  - name: "STM32 Enter DFU and Flash"
+    device_filter:
+      device_type: "STM32"
+      vendor_id: "0483"
+      product_id: "5740"  # Regular STM32, not DFU mode
+    steps:
+      - action: "power_on"
+        params:
+          port: "auto"
+          power_level: "500mA"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 5
+        timeout: 10.0
+
+      - action: "enter_bootloader"
+        params:
+          method: "dfu"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 5
+        timeout: 10.0
+
+      - action: "flash_firmware"
+        params:
+          file: "/home/bruce/Arduino/USBFlashHub/test_firmware/stm32_test.bin"
+          tool: "dfu-util"
+        timeout: 30.0
+
+      - action: "reset_device"
+        timeout: 5.0
+
+      - action: "power_off"
+        timeout: 5.0
+
+  # Rule for Arduino Uno devices
+  - name: "Arduino Uno Upload Test"
+    device_filter:
+      device_type: "Arduino.*Uno"
+      vendor_id: "2341"
+    steps:
+      - action: "power_on"
+        params:
+          port: "auto"
+          power_level: "500mA"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 8
+        timeout: 10.0
+
+      - action: "flash_firmware"
+        params:
+          file: "/home/bruce/Arduino/USBFlashHub/test_firmware/arduino_blink.hex"
+          tool: "avrdude"
+        timeout: 30.0
+
+      - action: "run_test"
+        params:
+          script: "/home/bruce/Arduino/USBFlashHub/test_scripts/arduino_test.py"
+        timeout: 15.0
+
+      - action: "power_off"
+        timeout: 5.0
+
+  # Emergency test - just power cycle any unknown device
+  - name: "Power Cycle Test"
+    device_filter:
+      device_type: ".*"  # Match any device
+    steps:
+      - action: "power_on"
+        params:
+          port: "auto"
+          power_level: "500mA"
+        timeout: 5.0
+
+      - action: "wait_for_device"
+        params:
+          timeout: 3
+        timeout: 5.0
+
+      - action: "power_off"
+        timeout: 5.0

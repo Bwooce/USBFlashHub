@@ -99,6 +99,25 @@ POWER_500MA: 0x03 (USB 2.0 high power, default)
 
 ## Command Interface
 
+### Important Hardware Notes
+
+**Actual Hardware Configuration:**
+- Typically 3 hubs are physically connected (not all 8 software-supported hubs)
+- This provides ports 1-12 (3 hubs × 4 ports each)
+- Only 4 ports may be physically populated with USB connectors
+- LEDs are controlled per-hub, not per-port
+- Always turn on LEDs when activating ports for visual feedback
+
+**Quick Turn On All Connected Ports:**
+```bash
+# Smart script that detects actual hardware
+cd agents
+python3 turn_on_all_ports.py
+
+# One-liner for typical 3-hub setup (ports 1-12 with LEDs)
+python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,13)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) for h in range(1,4)]; print('Done')"
+```
+
 ### Port Control
 ```json
 {"cmd":"port","port":1,"power":"500mA"}    // Set power level

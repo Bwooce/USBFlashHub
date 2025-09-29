@@ -19,14 +19,28 @@ screen /dev/ttyACM0 115200
 nmap -p 80 192.168.1.0/24 | grep -B2 "80/tcp open"
 ```
 
-### Turn On All USB Ports (One-Liner)
-```bash
-# Using mDNS
-python3 -c "import websocket,json; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) for p in range(1,33)]; print('All ports ON')"
+### Turn On All USB Ports with LEDs
 
-# Using IP (replace with your hub's IP)
-python3 -c "import websocket,json; ws=websocket.WebSocket(); ws.connect('ws://192.168.1.100:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) for p in range(1,33)]; print('All ports ON')"
+**Smart Script (Recommended)** - Detects actual connected hubs:
+```bash
+# Automatically detects connected hubs and turns on ports with LEDs
+python3 turn_on_all_ports.py
+
+# Specific options
+python3 turn_on_all_ports.py --power 100mA        # Use 100mA instead of 500mA
+python3 turn_on_all_ports.py --no-leds           # Don't turn on LEDs
+python3 turn_on_all_ports.py --ports 1,2,3,4     # Only specific ports
+python3 turn_on_all_ports.py --ports 1-4         # Port range
+python3 turn_on_all_ports.py --host 192.168.1.100 # Use IP instead of mDNS
 ```
+
+**One-Liner for Connected Ports** (turns on ports 1-12 with LEDs):
+```bash
+# Ports 1-12 (3 hubs) with LEDs - based on typical setup
+python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,13)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) or time.sleep(0.02) for h in range(1,4)]; print('Ports 1-12 ON with LEDs')"
+```
+
+**Note**: The USBFlashHub hardware typically has 3 active hubs (ports 1-12) even though the software supports up to 8 hubs (32 ports). The script automatically detects what's actually connected.
 
 ## Overview
 

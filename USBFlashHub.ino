@@ -1734,7 +1734,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 
           String msg;
           serializeJson(response, msg);
-          wsServer.sendTXT(num, msg);
+          wsServer.broadcastTXT(msg);  // Broadcast to ALL clients so UI updates
         } else if (strcmp(action, "hub") == 0) {
           // Hub command - send full status update to all clients
           StaticJsonDocument<3072> status;

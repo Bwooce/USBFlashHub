@@ -142,6 +142,99 @@ Since boot/reset pin meanings vary by target:
 - **STM32**: Boot=HIGH for DFU mode, Reset=active LOW
 - User must set appropriate pin states for their target device
 
+## USB Device Identification
+
+The ESP32-S2/S3 appears as a custom USB device with:
+- **Manufacturer**: "USBFlashHub Project"
+- **Product**: "Hub Controller"
+- **Serial Number**: Unique ID based on MAC (e.g., "HUBCTL_507817F0F4")
+
+To customize, edit these defines in USBFlashHub.ino:
+```cpp
+#define USB_MANUFACTURER_NAME "USBFlashHub Project"
+#define USB_PRODUCT_NAME      "Hub Controller"
+#define USB_SERIAL_PREFIX     "HUBCTL_"
+```
+
+## Python Automation Agents
+
+### Testing Agent (agents/testing_agent.py)
+Automated device testing with rules engine:
+```bash
+cd agents
+./install.sh  # First time only
+python3 testing_agent.py --config test_rules.yaml
+```
+
+Features:
+- USB device detection and port correlation
+- YAML-based test workflows
+- Support for ESP32, STM32, Arduino devices
+- Automatic firmware flashing and testing
+
+Example rule in test_rules.yaml:
+```yaml
+- name: "ESP32-S3 Test"
+  device_match:
+    vid_pid: "303a:1001"  # ESP32-S3
+  steps:
+    - action: power_on
+      port: auto
+      power: 500mA
+    - action: enter_bootloader
+      method: boot_reset
+    - action: flash_firmware
+      file: "firmware.bin"
+      tool: esptool
+```
+
+### Hub Control Agent (agents/hub_control.py)
+Interactive control and monitoring:
+```bash
+python3 hub_control.py --mode cli     # Interactive CLI
+python3 hub_control.py --mode dashboard  # Real-time dashboard
+python3 hub_control.py --mode api     # REST API server
+```
+
+CLI Commands:
+- `power <port> <off|100mA|500mA>` - Control port power
+- `bootloader <port> <device_type>` - Enter bootloader mode
+- `status` - Show hub status
+- `inventory` - List all known devices
+- `all-off` - Emergency stop
+
+### Automation Scripts
+Ready-to-use scripts in agents/automation_scripts/:
+- `power_cycle_all.py` - Power cycle all/specific ports
+- `program_all_esp32.py` - Batch program ESP32 devices
+- `dfu_mode_stm32.py` - Put STM32s in DFU mode
+- `device_inventory.py` - Scan and catalog devices
+
+Example usage:
+```bash
+# Program all ESP32s with new firmware
+./automation_scripts/program_all_esp32.py firmware.bin
+
+# Power cycle specific ports
+./automation_scripts/power_cycle_all.py --ports 1,2,3 --delay 2
+
+# Scan all ports and update device database
+./automation_scripts/device_inventory.py
+```
+
+### Database Queries
+Hub Control agent maintains SQLite database of devices:
+```sql
+-- Find all ESP32 devices
+SELECT * FROM devices WHERE product_name LIKE '%ESP32%';
+
+-- Get test history for a device
+SELECT * FROM test_runs WHERE device_serial = 'ABC123' ORDER BY timestamp DESC;
+
+-- Find which port a device was last connected to
+SELECT * FROM port_history WHERE device_serial = 'ABC123' ORDER BY timestamp DESC LIMIT 1;
+```
+
 ## Compile Commands
 
 **ESP32-S2:**

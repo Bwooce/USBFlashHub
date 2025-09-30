@@ -97,6 +97,16 @@ POWER_100MA: 0x01 (USB 2.0 low power)
 POWER_500MA: 0x03 (USB 2.0 high power, default)
 ```
 
+## Activity Logging
+
+**Important Note on Persistence:**
+- The activity log uses PSRAM for large buffer capacity
+- **PSRAM is volatile memory** - it loses contents on ANY reset (power cycle, software reset, watchdog, etc.)
+- PSRAM is only preserved during deep sleep, not during normal reboots
+- The log is **not persistent across reboots** by design for performance
+- For persistent logging, logs should be retrieved via WebSocket before rebooting
+- Future enhancement: Optional flash storage (LittleFS) for persistent logs
+
 ## Command Interface
 
 ### Important Hardware Notes

@@ -708,23 +708,22 @@ public:
   ActivityLogger() : usePSRAM(false), entries(nullptr), header(nullptr) {}
 
   void begin() {
+    // Note: PSRAM is volatile and loses contents on ANY reset (not just power loss)
+    // It's NOT persistent across reboots. Only deep sleep preserves PSRAM.
+    // For true persistence, we'd need to use flash storage (Preferences/LittleFS)
+
     // Check for PSRAM and allocate buffer
     if (psramFound()) {
       header = (LogHeader*)ps_malloc(sizeof(LogHeader));
       entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
       if (entries && header) {
         usePSRAM = true;
-        if (header->magic == MAGIC_MARKER && header->writeIndex < MAX_ENTRIES && header->count <= MAX_ENTRIES) {
-          Serial.print(F("Activity log using PSRAM with "));
-          Serial.print(header->count);
-          Serial.println(F(" existing entries preserved"));
-        } else {
-          Serial.println(F("Activity log using PSRAM (initialized)"));
-          header->magic = MAGIC_MARKER;
-          header->writeIndex = 0;
-          header->count = 0;
-          memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
-        }
+        // PSRAM contents are lost on reset, so always initialize
+        Serial.println(F("Activity log using PSRAM (contents cleared on reboot)"));
+        header->magic = MAGIC_MARKER;
+        header->writeIndex = 0;
+        header->count = 0;
+        memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
       }
     }
 
@@ -1884,7 +1883,13 @@ void broadcastStatus() {
 }
 
 void setup() {
-  // Configure USB device identification for ESP32-S2/S3
+  Serial.begin(115200);
+
+  // USB device identification temporarily disabled
+  // The custom USB descriptors are causing "config 1 has no interfaces" error
+  // when used with CDCOnBoot=cdc compilation flag
+  // TODO: Fix USB descriptor configuration to work with CDC enabled at boot
+  /*
   #if defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
     #if ARDUINO_USB_MODE
       // Set custom USB device descriptors
@@ -1904,8 +1909,7 @@ void setup() {
       delay(100);  // Give USB time to initialize
     #endif
   #endif
-
-  Serial.begin(115200);
+  */
 
   // Wait for serial or timeout
   uint32_t start = millis();

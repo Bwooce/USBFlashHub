@@ -1678,6 +1678,15 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           String msg;
           serializeJson(status, msg);
           wsServer.sendTXT(num, msg);
+        } else if (strcmp(action, "log") == 0) {
+          // Log command - send activity log
+          StaticJsonDocument<2048> logResponse;
+          logResponse["status"] = "ok";
+          activityLogger.getLog(logResponse);
+
+          String msg;
+          serializeJson(logResponse, msg);
+          wsServer.sendTXT(num, msg);
         } else if (strcmp(action, "port") == 0) {
           // Port command - send full status update to all clients
           delay(50); // Give hardware time to update

@@ -717,9 +717,17 @@
         function updateLog(logData) {
             const logDiv = document.getElementById('activityLog');
             if (Array.isArray(logData)) {
+                // Clear and rebuild entire log when receiving full log from firmware
                 logDiv.innerHTML = '';
-                logData.forEach(entry => {
-                    addLogEntry(entry.time, entry.msg, entry.type);
+
+                // Process entries in reverse order (newest first in UI)
+                logData.reverse().forEach(entry => {
+                    // Build message from firmware log entry structure
+                    let msg = entry.action || entry.msg || '';
+                    if (entry.target) msg += ` [${entry.target}]`;
+                    if (entry.detail) msg += ` - ${entry.detail}`;
+
+                    addLogEntry(entry.time, msg, entry.type || '');
                 });
             }
         }

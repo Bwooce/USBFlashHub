@@ -289,7 +289,7 @@ private:
 
 public:
   HubController(TwoWire* i2c) : wire(i2c), lastActivity(0), numConnected(0) {
-    memset(hubStates, 0x01, sizeof(hubStates));  // Start with 100mA limit (bit 0 set)
+    memset(hubStates, 0x00, sizeof(hubStates));  // Start with 500mA limit (bit 0 clear)
     memset(portPowerStates, POWER_OFF, sizeof(portPowerStates));
     memset(connectedHubs, 0, sizeof(connectedHubs));
   }
@@ -391,10 +391,10 @@ public:
     }
 
     // Set Output Control Register with initial state
-    // Bit 0: Current limit (1=100mA, 0=500mA) - start with 100mA
+    // Bit 0: Current limit (1=100mA, 0=500mA) - start with 500mA (default)
     // Bit 3: LED control (0=off)
     // Bits 4-7: Port control (0=all ports off)
-    hubStates[hubIndex] = 0x01;  // Bit 0 set for 100mA, all else off
+    hubStates[hubIndex] = 0x00;  // Bit 0 clear for 500mA, all else off
     wire->beginTransmission(addr);
     wire->write(0x01);  // Output Control Register
     wire->write(hubStates[hubIndex]);
@@ -467,11 +467,11 @@ public:
     return updateHub(hubIndex);
   }
 
-  // Turn all ports and leds off, and go to 100mA
+  // Turn all ports and leds off (maintains 500mA default)
   void allOff() {
     for (uint8_t i = 0; i < MAX_HUBS; i++) {
       if (connectedHubs[i]) {
-        hubStates[i] = 0x01;  // Bit 0 set for 100mA, all ports/LED off
+        hubStates[i] = 0x00;  // Bit 0 clear for 500mA (default), all ports/LED off
         updateHub(i);
       }
     }
@@ -760,8 +760,9 @@ public:
 
     JsonArray logs = doc.createNestedArray("log");
 
+    // Send entries in reverse order (newest first)
     uint16_t start = (header->count < MAX_ENTRIES) ? 0 : header->writeIndex;
-    for (uint16_t i = 0; i < header->count; i++) {
+    for (int16_t i = header->count - 1; i >= 0; i--) {
       // Feed watchdog every 10 entries during log serialization
       if (i % 10 == 0) {
         esp_task_wdt_reset();

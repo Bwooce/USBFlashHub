@@ -720,8 +720,8 @@
                 // Clear and rebuild entire log when receiving full log from firmware
                 logDiv.innerHTML = '';
 
-                // Process entries in reverse order (newest first in UI)
-                logData.reverse().forEach(entry => {
+                // Firmware sends entries newest-first, display in that order
+                logData.forEach(entry => {
                     // Build message from firmware log entry structure
                     let msg = entry.action || entry.msg || '';
                     if (entry.target) msg += ` [${entry.target}]`;

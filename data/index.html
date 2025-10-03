@@ -198,12 +198,12 @@
             color: white;
         }
 
-        .btn-100 {
+        .btn-low {
             background: #2196F3;
             color: white;
         }
 
-        .btn-500 {
+        .btn-high {
             background: #FF9800;
             color: white;
         }
@@ -550,8 +550,8 @@
                     <div class="hub-controls">
                         <div class="control-group">
                             <label>Power Limit:</label>
-                            <button class="btn ${hub.power === '100mA' ? 'btn-active' : 'btn-100'}" onclick="setHubPower(${hub.num}, false)">100mA</button>
-                            <button class="btn ${hub.power === '500mA' ? 'btn-active' : 'btn-500'}" onclick="setHubPower(${hub.num}, true)">500mA</button>
+                            <button class="btn ${hub.power === 'low' ? 'btn-active' : 'btn-low'}" onclick="setHubPower(${hub.num}, false)">Low</button>
+                            <button class="btn ${hub.power === 'high' ? 'btn-active' : 'btn-high'}" onclick="setHubPower(${hub.num}, true)">High</button>
                         </div>
                         <div class="control-group">
                             <label>Hub LEDs:</label>
@@ -594,7 +594,7 @@
         }
 
         function setHubPower(hubNum, high) {
-            const powerLevel = high ? '500mA' : '100mA';
+            const powerLevel = high ? 'high' : 'low';
             if (sendCommand({ cmd: 'hub', hub: hubNum, power: powerLevel })) {
                 // Request status update after a short delay
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);

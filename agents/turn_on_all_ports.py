@@ -10,7 +10,7 @@ import time
 import argparse
 
 
-def detect_and_activate_ports(host="usbhub.local", power="500mA", with_leds=True):
+def detect_and_activate_ports(host="usbhub.local", power="high", with_leds=True):
     """Detect connected hubs/ports and turn them on with LEDs."""
 
     try:
@@ -114,8 +114,8 @@ def main():
     parser = argparse.ArgumentParser(description='Turn on all USBFlashHub ports')
     parser.add_argument('--host', default='usbhub.local',
                        help='Hub hostname or IP (default: usbhub.local)')
-    parser.add_argument('--power', choices=['off', '100mA', '500mA'],
-                       default='500mA', help='Power level (default: 500mA)')
+    parser.add_argument('--power', choices=['off', 'low', 'high'],
+                       default='high', help='Power level (default: high)')
     parser.add_argument('--no-leds', action='store_true',
                        help='Do not turn on LEDs')
     parser.add_argument('--ports', type=str,

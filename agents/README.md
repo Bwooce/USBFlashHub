@@ -27,7 +27,7 @@ nmap -p 80 192.168.1.0/24 | grep -B2 "80/tcp open"
 python3 turn_on_all_ports.py
 
 # Specific options
-python3 turn_on_all_ports.py --power 100mA        # Use 100mA instead of 500mA
+python3 turn_on_all_ports.py --power low        # Use low instead of high
 python3 turn_on_all_ports.py --no-leds           # Don't turn on LEDs
 python3 turn_on_all_ports.py --ports 1,2,3,4     # Only specific ports
 python3 turn_on_all_ports.py --ports 1-4         # Port range
@@ -37,7 +37,7 @@ python3 turn_on_all_ports.py --host 192.168.1.100 # Use IP instead of mDNS
 **One-Liner for All Possible Ports** (attempts all 32 ports with LEDs):
 ```bash
 # Try all possible ports (1-32) and hubs (1-8) with LEDs
-python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,33)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) or time.sleep(0.02) for h in range(1,9)]; print('All ports attempted with LEDs')"
+python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'high'})) or time.sleep(0.02) for p in range(1,33)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) or time.sleep(0.02) for h in range(1,9)]; print('All ports attempted with LEDs')"
 ```
 
 **Note**: The software supports up to 8 hubs (32 ports total). The script will attempt to control all possible ports - actual hardware will only respond for connected hubs.
@@ -136,7 +136,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "enter_bootloader"
@@ -153,7 +153,7 @@ rules:
 
 ### Supported Actions
 
-- **power_on**: Turn on port power (off, 100mA, 500mA)
+- **power_on**: Turn on port power (off, low, high)
 - **power_off**: Turn off port power
 - **wait_for_device**: Wait for device to appear
 - **enter_bootloader**: Enter bootloader mode (boot_reset, dfu)
@@ -192,7 +192,7 @@ USBHub> help
 Available commands:
 
 Power Control:
-  power <port> <level>      - Set port power (off, 100mA, 500mA)
+  power <port> <level>      - Set port power (off, low, high)
   power-cycle <port>        - Power cycle a port
   all-off                   - Emergency stop all ports
   bootloader <port> [type]  - Enter bootloader mode
@@ -221,14 +221,14 @@ Hub Status
 ┌─────┬─────────┬──────┬───────┬──────────────┐
 │ Hub │ Address │ Port │ Power │ Device       │
 ├─────┼─────────┼──────┼───────┼──────────────┤
-│ 1   │ 0x18    │ 1    │ 500mA │ ESP32-S3     │
+│ 1   │ 0x18    │ 1    │ high │ ESP32-S3     │
 │     │         │ 2    │ off   │ None         │
-│     │         │ 3    │ 500mA │ STM32        │
+│     │         │ 3    │ high │ STM32        │
 │     │         │ 4    │ off   │ None         │
 └─────┴─────────┴──────┴───────┴──────────────┘
 
-USBHub> power 2 500mA
-✓ Port 2 power set to 500mA
+USBHub> power 2 high
+✓ Port 2 power set to high
 
 USBHub> bootloader 3 STM32
 ✓ Entered bootloader mode for STM32 on port 3
@@ -397,7 +397,7 @@ def main():
         return 1
 
     # Your automation logic here
-    hub.power_port(1, "500mA")
+    hub.power_port(1, "high")
     hub.enter_bootloader_mode(1, "ESP32")
 
     hub.disconnect()
@@ -593,7 +593,7 @@ python3 hub_control.py --mode api &
 python3 testing_agent.py &
 
 # Control via API
-curl -X POST http://localhost:5000/api/port/1/power -d '{"level":"500mA"}'
+curl -X POST http://localhost:5000/api/port/1/power -d '{"level":"high"}'
 ```
 
 ## Troubleshooting
@@ -689,7 +689,7 @@ hub.get_status()
 python3 hub_control.py
 
 # Power on a device and enter bootloader mode
-USBHub> power 5 500mA
+USBHub> power 5 high
 USBHub> bootloader 5 ESP32
 
 # Check status

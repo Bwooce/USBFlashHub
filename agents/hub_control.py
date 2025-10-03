@@ -93,7 +93,7 @@ class DeviceRecord:
 class PortStatus:
     """Status information for a hub port"""
     port_number: int
-    power_state: str = "unknown"  # off, 100mA, 500mA, unknown
+    power_state: str = "unknown"  # off, low, high, unknown
     device_connected: bool = False
     device_info: Optional[DeviceRecord] = None
     last_activity: Optional[datetime] = None
@@ -521,7 +521,7 @@ class HubController:
         self.send_command({"cmd": "status"})
 
     # Port control methods
-    def power_port(self, port: int, power_level: str = "500mA") -> bool:
+    def power_port(self, port: int, power_level: str = "high") -> bool:
         """Control power to a specific port"""
         command = {"cmd": "port", "port": port, "power": power_level}
         success = self.send_command(command) is not None
@@ -548,7 +548,7 @@ class HubController:
         time.sleep(off_time)
 
         # Turn back on
-        return self.power_port(port, "500mA")
+        return self.power_port(port, "high")
 
     def all_ports_off(self) -> bool:
         """Turn off all ports (emergency stop)"""
@@ -628,12 +628,12 @@ Type 'help' for available commands or 'quit' to exit.
     # Power control commands
     def do_power(self, args):
         """Power control: power <port> <level>
-        Examples: power 5 500mA, power 3 off, power 1 100mA"""
+        Examples: power 5 high, power 3 off, power 1 low"""
         try:
             parts = args.split()
             if len(parts) != 2:
                 print("Usage: power <port> <level>")
-                print("Levels: off, 100mA, 500mA")
+                print("Levels: off, low, high")
                 return
 
             port = int(parts[0])
@@ -1120,7 +1120,7 @@ class RestAPIServer:
         def set_port_power(port):
             """Set port power level"""
             data = request.json
-            power_level = data.get('level', '500mA')
+            power_level = data.get('level', 'high')
 
             success = self.hub.power_port(port, power_level)
             return jsonify({"success": success, "port": port, "power": power_level})

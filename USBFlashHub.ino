@@ -8,8 +8,9 @@
 // COMMAND FORMAT REFERENCE
 // ============================================
 // Port Control:
-//   {"cmd":"port","port":1,"power":"500mA"}    // Set power level (off/100mA/500mA)
+//   {"cmd":"port","port":1,"power":"high"}     // Set power level (off/low/high)
 //   {"cmd":"port","port":5,"power":"off"}      // Turn off port
+//   {"cmd":"port","port":2,"power":"low"}      // Set to low power
 //
 // Hub Control:
 //   {"cmd":"hub","hub":1,"state":255}          // Set raw hub state (8-bit value)
@@ -51,7 +52,7 @@
 // ============================================
 // Success Response:
 //   {"status":"ok","msg":"Description of action"}
-//   {"status":"ok","port":1,"power":"500mA"}
+//   {"status":"ok","port":1,"power":"high"}
 //
 // Error Response:
 //   {"status":"error","msg":"Error description","detail":"Optional details"}
@@ -68,10 +69,10 @@
 //       {
 //         "num":1,"addr":68,"state":255,
 //         "ports":[
-//           {"num":1,"power":"500mA"},
+//           {"num":1,"power":"high"},
 //           {"num":2,"power":"off"},
-//           {"num":3,"power":"100mA"},
-//           {"num":4,"power":"500mA"}
+//           {"num":3,"power":"low"},
+//           {"num":4,"power":"high"}
 //         ]
 //       }
 //     ]
@@ -232,13 +233,16 @@ const uint8_t HUB_ADDRESSES[MAX_HUBS] = {
   0x1F   // Hub 8: ports 29-32
 };
 
-// USB Power levels per USB spec
+// USB Power levels
 // Bit patterns for power control:
 // Bits [1:0] control power level:
+// NOTE: Actual current values depend on resistor configuration per datasheet
+// Formula: 6.8k / R_ISET = Current in Amps
+// Typical values with common resistors: ~120mA (low), ~240mA (high)
 #define POWER_OFF     0x00  // Port disabled
-#define POWER_100MA   0x01  // USB 2.0 low power (100mA)
-#define POWER_500MA   0x03  // USB 2.0 high power (500mA)
-#define POWER_DEFAULT POWER_500MA
+#define POWER_LOW     0x01  // Lower current limit
+#define POWER_HIGH    0x03  // Higher current limit (default)
+#define POWER_DEFAULT POWER_HIGH
 
 // ============================================
 // I2C HEALTH MONITORING
@@ -307,7 +311,7 @@ private:
 
 public:
   HubController(TwoWire* i2c) : wire(i2c), lastActivity(0), numConnected(0) {
-    memset(hubStates, 0x00, sizeof(hubStates));  // Start with 500mA limit (bit 0 clear)
+    memset(hubStates, 0x00, sizeof(hubStates));  // Start with high power (bit 0 clear)
     memset(portPowerStates, POWER_OFF, sizeof(portPowerStates));
     memset(connectedHubs, 0, sizeof(connectedHubs));
   }
@@ -395,10 +399,10 @@ public:
     writeI2CRegister(addr, 0x02, 0x00);  // Non-critical if fails
 
     // Set Output Control Register with initial state
-    // Bit 0: Current limit (1=100mA, 0=500mA) - start with 500mA (default)
+    // Bit 0: Current limit (1=low, 0=high) - start with high power (default)
     // Bit 3: LED control (1=on, 0=off) - default to on for visibility
     // Bits 4-7: Port control (0=all ports off)
-    hubStates[hubIndex] = 0x08;  // Bit 0 clear for 500mA, bit 3 set for LED on
+    hubStates[hubIndex] = 0x08;  // Bit 0 clear for high power, bit 3 set for LED on
     writeI2CRegister(addr, 0x01, hubStates[hubIndex]);  // with retry
 
     // Port 4 defaults to on for some reason, make sure it's off
@@ -438,10 +442,10 @@ public:
     }
 
     // Apply power level to hub before enabling port
-    if (powerLevel == POWER_100MA) {
-      updateHubPower(hubIndex, false);  // 100mA
-    } else if (powerLevel == POWER_500MA) {
-      updateHubPower(hubIndex, true);   // 500mA
+    if (powerLevel == POWER_LOW) {
+      updateHubPower(hubIndex, false);  // Low power
+    } else if (powerLevel == POWER_HIGH) {
+      updateHubPower(hubIndex, true);   // High power
     }
 
     // For this hardware, ports are either on or off
@@ -468,11 +472,11 @@ public:
     return updateHub(hubIndex);
   }
 
-  // Turn all ports off (maintains 500mA default and LED on)
+  // Turn all ports off (maintains high power default and LED on)
   void allOff() {
     for (uint8_t i = 0; i < MAX_HUBS; i++) {
       if (connectedHubs[i]) {
-        hubStates[i] = 0x08;  // Bit 0 clear for 500mA, bit 3 set for LED on, all ports off
+        hubStates[i] = 0x08;  // Bit 0 clear for high power, bit 3 set for LED on, all ports off
         updateHub(i);
       }
     }
@@ -518,7 +522,7 @@ public:
   // Get power setting of a specific hub (bit 0 is power control)
   bool getHubPowerHigh(uint8_t hubIndex) {
     if (hubIndex >= MAX_HUBS) return false;
-    // Bit 0: 0=500mA (high), 1=100mA (low) - inverted logic
+    // Bit 0: 0=high power, 1=low power - inverted logic
     return !(hubStates[hubIndex] & 0x01);
   }
 
@@ -535,7 +539,7 @@ public:
 
         // Add hub-level LED and power status
         hub["led"] = getHubLEDState(i);
-        hub["power"] = getHubPowerHigh(i) ? "500mA" : "100mA";
+        hub["power"] = getHubPowerHigh(i) ? "high" : "low";
 
         JsonArray ports = hub.createNestedArray("ports");
         for (uint8_t p = 0; p < PORTS_PER_HUB; p++) {
@@ -562,17 +566,17 @@ public:
     updateHub(hubIndex);
   }
 
-  // Control Power level per Hub (100mA vs 500mA)
+  // Control Power level per Hub (low vs high)
   void updateHubPower(uint8_t hubIndex, bool high) {
     if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
 
     uint8_t oldState = hubStates[hubIndex];
 
-    // Bit 0 controls current limit: 0 = 500mA, 1 = 100mA (inverted logic)
+    // Bit 0 controls current limit: 0 = high, 1 = low (inverted logic)
     if (high) {
-      hubStates[hubIndex] &= ~0x01;  // Clear bit 0 for 500mA
+      hubStates[hubIndex] &= ~0x01;  // Clear bit 0 for high power
     } else {
-      hubStates[hubIndex] |= 0x01;  // Set bit 0 for 100mA
+      hubStates[hubIndex] |= 0x01;  // Set bit 0 for low power
     }
 
     Serial.print(F("Hub "));
@@ -630,8 +634,8 @@ private:
   const char* getPowerString(uint8_t level) {
     switch(level) {
       case POWER_OFF: return "off";
-      case POWER_100MA: return "100mA";
-      case POWER_500MA: return "500mA";
+      case POWER_LOW: return "low";
+      case POWER_HIGH: return "high";
       default: return "unknown";
     }
   }
@@ -1301,10 +1305,10 @@ private:
 
     if (strcmp(powerStr, "off") == 0) {
       powerLevel = POWER_OFF;
-    } else if (strcmp(powerStr, "100mA") == 0 || strcmp(powerStr, "low") == 0) {
-      powerLevel = POWER_100MA;
-    } else if (strcmp(powerStr, "500mA") == 0 || strcmp(powerStr, "high") == 0) {
-      powerLevel = POWER_500MA;
+    } else if (strcmp(powerStr, "low") == 0 || strcmp(powerStr, "100mA") == 0) {
+      powerLevel = POWER_LOW;
+    } else if (strcmp(powerStr, "high") == 0 || strcmp(powerStr, "500mA") == 0) {
+      powerLevel = POWER_HIGH;
     }
 
     if (hub->setPortByNumber(portNum, powerLevel)) {
@@ -1353,15 +1357,15 @@ private:
     // Handle power control
     if (cmd.containsKey("power")) {
       const char* power = cmd["power"];
-      bool high = (strcmp(power, "500mA") == 0);
+      bool high = (strcmp(power, "high") == 0 || strcmp(power, "500mA") == 0);
       hub->updateHubPower(hubIndex, high);
 
       // Log with [hub:] format
       char detail[16];
       snprintf(detail, sizeof(detail), "[%d:]", hubNum);
-      logger->log(high ? "hub_power_500mA" : "hub_power_100mA", 0, detail);
+      logger->log(high ? "hub_power_high" : "hub_power_low", 0, detail);
 
-      sendOK(high ? "Hub power set to 500mA" : "Hub power set to 100mA");
+      sendOK(high ? "Hub power set to high" : "Hub power set to low");
       return;
     }
 
@@ -1385,7 +1389,7 @@ private:
       response["hub"] = hubNum;
       response["state"] = state;
       response["led"] = hub->getHubLEDState(hubIndex);
-      response["power"] = hub->getHubPowerHigh(hubIndex) ? "500mA" : "100mA";
+      response["power"] = hub->getHubPowerHigh(hubIndex) ? "high" : "low";
       serializeJson(response, Serial);
       Serial.println();
     }
@@ -1560,9 +1564,10 @@ public:
   void printHelp() {
     Serial.println(F("\n=== USBFlashHub Commands ==="));
     Serial.println(F("\nPort Control:"));
-    Serial.println(F("  {\"cmd\":\"port\",\"port\":1,\"power\":\"500mA\"}"));
+    Serial.println(F("  {\"cmd\":\"port\",\"port\":1,\"power\":\"high\"}"));
     Serial.println(F("  {\"cmd\":\"port\",\"port\":5,\"power\":\"off\"}"));
-    Serial.println(F("  Power levels: off, 100mA, 500mA"));
+    Serial.println(F("  {\"cmd\":\"port\",\"port\":2,\"power\":\"low\"}"));
+    Serial.println(F("  Power levels: off, low, high"));
     Serial.println(F("\nHub Control:"));
     Serial.println(F("  {\"cmd\":\"hub\",\"hub\":1,\"state\":255}"));
     Serial.println(F("  {\"cmd\":\"alloff\"}"));
@@ -1688,8 +1693,8 @@ void handleWebStatus() {
     if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
       uint8_t state = hubController.getPortPower(i);
       if (state == POWER_OFF) ports[String(i)] = "off";
-      else if (state == POWER_100MA) ports[String(i)] = "100mA";
-      else if (state == POWER_500MA) ports[String(i)] = "500mA";
+      else if (state == POWER_LOW) ports[String(i)] = "low";
+      else if (state == POWER_HIGH) ports[String(i)] = "high";
     }
   }
 
@@ -1824,8 +1829,8 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
             if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
               uint8_t state = hubController.getPortPower(i);
               if (state == POWER_OFF) ports[String(i)] = "off";
-              else if (state == POWER_100MA) ports[String(i)] = "100mA";
-              else if (state == POWER_500MA) ports[String(i)] = "500mA";
+              else if (state == POWER_LOW) ports[String(i)] = "low";
+              else if (state == POWER_HIGH) ports[String(i)] = "high";
             }
           }
 
@@ -1993,8 +1998,8 @@ void broadcastStatus() {
     if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
       uint8_t state = hubController.getPortPower(i);
       if (state == POWER_OFF) ports[String(i)] = "off";
-      else if (state == POWER_100MA) ports[String(i)] = "100mA";
-      else if (state == POWER_500MA) ports[String(i)] = "500mA";
+      else if (state == POWER_LOW) ports[String(i)] = "low";
+      else if (state == POWER_HIGH) ports[String(i)] = "high";
     }
   }
 

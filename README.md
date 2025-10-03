@@ -7,7 +7,7 @@ ESP32-S2/S3/C3 controller for USB hub management and microcontroller programming
 - **Multi-Board Support**: ESP32-S2, ESP32-S3, ESP32-C3, and original ESP32
 - **Web Interface**: Real-time WebSocket control via browser
 - **I2C Hub Control**: Manages up to 8 hubs (32 USB ports total)
-- **Power Management**: Per-port power control (Off/100mA/500mA)
+- **Power Management**: Per-port power control (Off/Low/High - actual mA values depend on resistor configuration)
 - **LED Control**: Status, activity, and error indication (RGB on S3)
 - **Pin Control**: Direct boot/reset pin control for device programming
 - **Activity Logging**: PSRAM-based circular buffer with up to 10,000 entries
@@ -94,9 +94,9 @@ python3 testing_agent.py --config test_rules.yaml
 
 **Port Control:**
 ```json
-{"cmd":"port","port":1,"power":"500mA"}
+{"cmd":"port","port":1,"power":"high"}
 {"cmd":"port","port":5,"power":"off"}
-{"cmd":"port","port":1,"power":"100mA"}
+{"cmd":"port","port":1,"power":"low"}
 {"cmd":"port","port":3,"enable":true}
 {"cmd":"port","port":3,"enable":false}
 ```
@@ -140,6 +140,15 @@ python3 testing_agent.py --config test_rules.yaml
 {"cmd":"config","mdns":"usbhub"}
 {"cmd":"config"}
 ```
+
+## Power Levels
+
+The hub supports three power levels: **off**, **low**, and **high**.
+
+**Important:** The actual current values depend on the resistor configuration in your specific hardware:
+- Formula: **6.8kΩ / R_ISET = Current in Amps** (per PCA9557PW datasheet)
+- Typical values: ~120mA (low) and ~240mA (high) with common resistors
+- Check your hub's schematic/BOM for actual R_ISET resistor values
 
 ## Port Numbering
 

@@ -75,8 +75,8 @@ def main():
         # Phase 3: Turn ports back on
         print("\n🔌 Turning on ports...")
         for port in ports_to_cycle:
-            print(f"   Port {port}: 500mA")
-            hub.power_port(port, "500mA")
+            print(f"   Port {port}: high")
+            hub.power_port(port, "high")
             time.sleep(args.delay)
 
         print("\n✅ Power cycle completed successfully")

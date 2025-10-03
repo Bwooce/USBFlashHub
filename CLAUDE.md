@@ -23,7 +23,7 @@ USBFlashHub - ESP32-S2 controller for USB hub management and microcontroller pro
 - **Static Port Numbering**: Ports 1-32 mapped sequentially across hubs
 - **Direct Pin Control**: Boot/Reset pins just HIGH/LOW (no per-board config)
 - **Hardcoded Hub Addresses**: Up to 8 hubs at 0x18-0x1F (configurable via MAX_HUBS)
-- **Power Level Control**: Off/100mA/500mA per USB spec
+- **Power Level Control**: Off/low/high per USB spec
 - **LED Management**: Dedicated LED controller class
 
 ## Architecture
@@ -93,9 +93,18 @@ EMERGENCY_BTN: GPIO 0
 ### Power Levels
 ```
 POWER_OFF: 0x00 (disabled)
-POWER_100MA: 0x01 (USB 2.0 low power)
-POWER_500MA: 0x03 (USB 2.0 high power, default)
+POWER_LOW: 0x01 (Lower current limit)
+POWER_HIGH: 0x03 (Higher current limit, default)
 ```
+
+**Important - Actual Current Values:**
+The actual current limits depend on the resistor configuration per the PCA9557PW datasheet.
+- **Formula:** 6.8kΩ / R_ISET = Current in Amps
+- **Typical values** (depends on your specific hardware BOM):
+  - Low power: ~120mA (with 57kΩ resistor)
+  - High power: ~240mA (with 28kΩ resistor)
+- **Not** the USB spec 100mA/500mA values
+- Check your hub's schematic/BOM for actual R_ISET resistor values
 
 ## Activity Logging
 
@@ -124,12 +133,12 @@ cd agents
 python3 turn_on_all_ports.py
 
 # One-liner to attempt all possible ports and hubs with LEDs
-python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'500mA'})) or time.sleep(0.02) for p in range(1,33)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) for h in range(1,9)]; print('Done')"
+python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws://usbhub.local:81'); [ws.send(json.dumps({'cmd':'port','port':p,'power':'high'})) or time.sleep(0.02) for p in range(1,33)]; [ws.send(json.dumps({'cmd':'hub','hub':h,'led':True})) for h in range(1,9)]; print('Done')"
 ```
 
 ### Port Control
 ```json
-{"cmd":"port","port":1,"power":"500mA"}    // Set power level
+{"cmd":"port","port":1,"power":"high"}    // Set power level
 {"cmd":"port","port":5,"power":"off"}      // Turn off port
 {"cmd":"port","port":3,"enable":true}      // Legacy enable/disable
 ```
@@ -208,7 +217,7 @@ Example rule in test_rules.yaml:
   steps:
     - action: power_on
       port: auto
-      power: 500mA
+      power: high
     - action: enter_bootloader
       method: boot_reset
     - action: flash_firmware
@@ -225,7 +234,7 @@ python3 hub_control.py --mode api     # REST API server
 ```
 
 CLI Commands:
-- `power <port> <off|100mA|500mA>` - Control port power
+- `power <port> <off|low|high>` - Control port power
 - `bootloader <port> <device_type>` - Enter bootloader mode
 - `status` - Show hub status
 - `inventory` - List all known devices

@@ -524,7 +524,7 @@ class TestingEngine:
                 if port == "auto":
                     # Auto-detect port (simplified - would need proper correlation logic)
                     port = 1  # Default to port 1 for now
-                power_level = params.get("power_level", "500mA")
+                power_level = params.get("power_level", "high")
                 return self.hub_controller.power_port(port, power_level)
 
             elif action == "power_off":

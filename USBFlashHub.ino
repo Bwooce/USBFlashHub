@@ -723,6 +723,19 @@ public:
     // It's NOT persistent across reboots. Only deep sleep preserves PSRAM.
     // For true persistence, we'd need to use flash storage (Preferences/LittleFS)
 
+    // Free existing allocations if begin() called multiple times
+    if (entries) {
+      if (usePSRAM) {
+        heap_caps_free(entries);
+        heap_caps_free(header);
+      } else {
+        delete[] entries;
+        delete header;
+      }
+      entries = nullptr;
+      header = nullptr;
+    }
+
     // Check for PSRAM and allocate buffer
     if (psramFound()) {
       // Calculate max entries based on available PSRAM (use 75% to leave headroom)
@@ -1464,6 +1477,7 @@ public:
 
     // WiFi status
     if (WiFi.status() == WL_CONNECTED) {
+      response["wifi_ssid"] = WiFi.SSID();
       response["wifi_rssi"] = WiFi.RSSI();
       response["wifi_channel"] = WiFi.channel();
     }
@@ -1582,7 +1596,7 @@ CommandProcessor processor(&hubController, &pinController, &ledController,
 // Web server and WebSocket
 WebServer webServer(80);
 WebSocketsServer wsServer(81);
-bool wsConnected = false;
+volatile bool wsConnected = false;
 
 // Emergency stop handler
 volatile bool emergencyStopFlag = false;
@@ -1695,12 +1709,24 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
     }
 
     case WStype_TEXT: {
-      // Process command from WebSocket
-      String cmdStr = String((char*)payload);
+      // Process command from WebSocket with length validation
+      const size_t MAX_WS_PAYLOAD = 512;
+      if (length == 0 || length > MAX_WS_PAYLOAD) {
+        Serial.printf("WebSocket: Invalid payload length %u\n", length);
+        break;
+      }
+
+      // Create null-terminated string safely
+      char safeBuffer[MAX_WS_PAYLOAD + 1];
+      size_t copyLen = (length < MAX_WS_PAYLOAD) ? length : MAX_WS_PAYLOAD;
+      memcpy(safeBuffer, payload, copyLen);
+      safeBuffer[copyLen] = '\0';
+
+      String cmdStr = String(safeBuffer);
       Serial.print(F("WebSocket command: "));
       Serial.println(cmdStr);
 
-      StaticJsonDocument<256> cmd;
+      StaticJsonDocument<512> cmd;  // Increased to match buffer
       DeserializationError error = deserializeJson(cmd, cmdStr);
 
       if (!error) {
@@ -1710,7 +1736,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
         // Special handling for status command - send full response
         const char* action = cmd["cmd"];
         if (strcmp(action, "status") == 0) {
-          StaticJsonDocument<3072> status;
+          StaticJsonDocument<4096> status;  // Increased for 32 ports + system info
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -1750,6 +1776,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 
           // WiFi status
           if (WiFi.status() == WL_CONNECTED) {
+            status["wifi_ssid"] = WiFi.SSID();
             status["wifi_rssi"] = WiFi.RSSI();
             status["wifi_channel"] = WiFi.channel();
           }
@@ -1780,7 +1807,19 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 
           String msg;
           serializeJson(status, msg);
-          wsServer.sendTXT(num, msg);
+
+          // Check for buffer overflow
+          if (status.overflowed()) {
+            Serial.println(F("ERROR: Status JSON buffer overflow!"));
+            StaticJsonDocument<256> error;
+            error["status"] = "error";
+            error["msg"] = "Status response too large";
+            String errorMsg;
+            serializeJson(error, errorMsg);
+            wsServer.sendTXT(num, errorMsg);
+          } else {
+            wsServer.sendTXT(num, msg);
+          }
         } else if (strcmp(action, "log") == 0) {
           // Log command - send activity log
           StaticJsonDocument<2048> logResponse;
@@ -1794,7 +1833,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           // Port command - send full status update to all clients
           delay(50); // Give hardware time to update
 
-          StaticJsonDocument<3072> status;
+          StaticJsonDocument<4096> status;
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -1868,7 +1907,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           // All off command - send full status update to all clients
           delay(50); // Give hardware time to update
 
-          StaticJsonDocument<3072> status;
+          StaticJsonDocument<4096> status;
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -1917,7 +1956,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 void broadcastStatus() {
   if (!wsConnected) return;
 
-  StaticJsonDocument<2048> doc;
+  StaticJsonDocument<4096> doc;
 
   // Add full hub information
   JsonArray hubs = doc.createNestedArray("hubs");
@@ -1965,6 +2004,7 @@ void broadcastStatus() {
 
   // WiFi status
   if (WiFi.status() == WL_CONNECTED) {
+    system["wifi_ssid"] = WiFi.SSID();
     system["wifi_rssi"] = WiFi.RSSI();
     system["wifi_channel"] = WiFi.channel();
   }
@@ -1992,41 +2032,44 @@ void broadcastStatus() {
 }
 
 void logSystemStats() {
-  // Build stats string with all metrics
-  String stats = "";
+  // Build stats string with all metrics using stack buffer (no heap allocation)
+  char stats[128];
+  int offset = 0;
 
   // Uptime in hours
   uint32_t uptimeHours = millis() / 3600000;
-  stats += "up:" + String(uptimeHours) + "h";
+  offset += snprintf(stats + offset, sizeof(stats) - offset, "up:%luh", (unsigned long)uptimeHours);
 
   // Heap usage (current/min)
   uint32_t freeHeap = ESP.getFreeHeap();
   uint32_t minFreeHeap = ESP.getMinFreeHeap();
-  stats += " heap:" + String(freeHeap / 1024) + "/" + String(minFreeHeap / 1024) + "KB";
+  offset += snprintf(stats + offset, sizeof(stats) - offset, " heap:%lu/%luKB",
+                    (unsigned long)(freeHeap / 1024), (unsigned long)(minFreeHeap / 1024));
 
   // PSRAM usage if available (current/min)
   if (ESP.getPsramSize() > 0) {
     uint32_t freePsram = ESP.getFreePsram();
     uint32_t minFreePsram = ESP.getMinFreePsram();
-    stats += " psram:" + String(freePsram / 1024) + "/" + String(minFreePsram / 1024) + "KB";
+    offset += snprintf(stats + offset, sizeof(stats) - offset, " psram:%lu/%luKB",
+                      (unsigned long)(freePsram / 1024), (unsigned long)(minFreePsram / 1024));
   }
 
   // Temperature if available (ESP32-S3)
   #ifdef CONFIG_IDF_TARGET_ESP32S3
     float temp = temperatureRead();
-    stats += " temp:" + String(temp, 1) + "C";
+    offset += snprintf(stats + offset, sizeof(stats) - offset, " temp:%.1fC", temp);
   #endif
 
   // WiFi signal strength
   if (WiFi.status() == WL_CONNECTED) {
     int rssi = WiFi.RSSI();
-    stats += " rssi:" + String(rssi) + "dBm";
+    offset += snprintf(stats + offset, sizeof(stats) - offset, " rssi:%ddBm", rssi);
   }
 
   // I2C health
-  stats += " i2c:" + String(i2cHealth.errorRate, 2) + "%";
+  snprintf(stats + offset, sizeof(stats) - offset, " i2c:%.2f%%", i2cHealth.errorRate);
 
-  activityLogger.log("system_stats", 0, stats.c_str());
+  activityLogger.log("system_stats", 0, stats);
 }
 
 void setup() {
@@ -2248,15 +2291,24 @@ void loop() {
   // Network reconnect handler
   wifiManager.loop();
 
-  // Check emergency stop
-  if (emergencyStopFlag) {
+  // Check emergency stop (non-blocking state machine)
+  static uint32_t emergencyStartTime = 0;
+  static bool emergencyActive = false;
+
+  if (emergencyStopFlag && !emergencyActive) {
     emergencyStopFlag = false;
+    emergencyActive = true;
+    emergencyStartTime = millis();
     Serial.println(F("\n!!! EMERGENCY STOP !!!"));
     hubController.allOff();
     pinController.setReset(true);
     ledController.errorPattern();
-    delay(500);
+  }
+
+  // Release reset after 500ms without blocking
+  if (emergencyActive && (millis() - emergencyStartTime >= 500)) {
     pinController.setReset(false);
+    emergencyActive = false;
   }
 
   // Process serial commands

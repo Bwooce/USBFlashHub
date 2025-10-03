@@ -418,6 +418,7 @@
                 <div style="background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 3px solid #FF9800;">
                     <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #FF9800;">Network</h3>
                     <div style="display: grid; gap: 8px; font-size: 13px;">
+                        <div><span style="color: #888;">WiFi SSID:</span> <span id="wifiSsid" style="float: right; color: #fff;">-</span></div>
                         <div><span style="color: #888;">WiFi RSSI:</span> <span id="wifiRssi" style="float: right; color: #fff;">-</span></div>
                     </div>
                 </div>
@@ -695,6 +696,9 @@
             }
             if (system.cpu_freq !== undefined) {
                 document.getElementById('cpuFreq').textContent = system.cpu_freq;
+            }
+            if (system.wifi_ssid !== undefined) {
+                document.getElementById('wifiSsid').textContent = system.wifi_ssid;
             }
             if (system.wifi_rssi !== undefined) {
                 document.getElementById('wifiRssi').textContent = system.wifi_rssi;

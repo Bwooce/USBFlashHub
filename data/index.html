@@ -383,8 +383,10 @@
         <div class="panel">
             <h2>System Status</h2>
             <div id="systemStatus" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 10px 0;">
-                <div><b>Free Heap:</b> <span id="freeHeap">-</span></div>
+                <div><b>Free Heap (SRAM):</b> <span id="freeHeap">-</span></div>
                 <div><b>Min Free Heap:</b> <span id="minFreeHeap">-</span></div>
+                <div id="psramStats" style="display: none;"><b>Free PSRAM:</b> <span id="freePsram">-</span></div>
+                <div id="psramMinStats" style="display: none;"><b>Min Free PSRAM:</b> <span id="minFreePsram">-</span></div>
                 <div><b>CPU Freq:</b> <span id="cpuFreq">-</span> MHz</div>
                 <div><b>WiFi RSSI:</b> <span id="wifiRssi">-</span> dBm</div>
                 <div><b>Temperature:</b> <span id="temperature">-</span></div>
@@ -657,6 +659,15 @@
             }
             if (system.min_free_heap !== undefined) {
                 document.getElementById('minFreeHeap').textContent = formatBytes(system.min_free_heap);
+            }
+            // PSRAM stats (if available)
+            if (system.free_psram !== undefined) {
+                document.getElementById('freePsram').textContent = formatBytes(system.free_psram);
+                document.getElementById('psramStats').style.display = 'block';
+            }
+            if (system.min_free_psram !== undefined) {
+                document.getElementById('minFreePsram').textContent = formatBytes(system.min_free_psram);
+                document.getElementById('psramMinStats').style.display = 'block';
             }
             if (system.cpu_freq !== undefined) {
                 document.getElementById('cpuFreq').textContent = system.cpu_freq;

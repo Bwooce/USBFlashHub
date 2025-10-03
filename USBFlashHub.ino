@@ -1252,11 +1252,11 @@ private:
     }
 
     if (hub->setPortByNumber(portNum, powerLevel)) {
-      // Log with [hub:port] format
+      // Log with [hub:port] format (power is hub-level, not shown here)
       uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
       uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
-      char detail[32];
-      snprintf(detail, sizeof(detail), "[%d:%d] %s", hubIndex + 1, portIndex + 1, powerStr);
+      char detail[16];
+      snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
       logger->log("port_set", 0, detail);
 
       response.clear();
@@ -1422,15 +1422,17 @@ public:
     response["restart_reason"] = restartReason;
     response["restart_time"] = restartTime;
 
-    // ESP32 system status
+    // ESP32 system status - Regular heap (SRAM)
     response["free_heap"] = ESP.getFreeHeap();
     response["heap_size"] = ESP.getHeapSize();
     response["min_free_heap"] = ESP.getMinFreeHeap();
 
-    #ifdef CONFIG_SPIRAM_SUPPORT
-      response["free_psram"] = ESP.getFreePsram();
+    // PSRAM stats (if available)
+    if (ESP.getPsramSize() > 0) {
       response["psram_size"] = ESP.getPsramSize();
-    #endif
+      response["free_psram"] = ESP.getFreePsram();
+      response["min_free_psram"] = ESP.getMinFreePsram();
+    }
 
     response["cpu_freq"] = ESP.getCpuFreqMHz();
     response["flash_size"] = ESP.getFlashChipSize();

@@ -220,7 +220,7 @@ class USBHubController:
             self.logger.error(f"Failed to send command: {e}")
             return None
 
-    def power_port(self, port: int, power_level: str = "500mA") -> bool:
+    def power_port(self, port: int, power_level: str = "high") -> bool:
         """Control power to a specific port"""
         command = {"cmd": "port", "port": port, "power": power_level}
         response = self.send_command(command)

@@ -26,8 +26,8 @@ def main():
     parser.add_argument("--group", help="Port group to scan")
     parser.add_argument("--power-on", action="store_true",
                        help="Power on ports before scanning")
-    parser.add_argument("--power-level", default="500mA",
-                       help="Power level for scanning")
+    parser.add_argument("--power-level", default="high",
+                       help="Power level for scanning (off/low/high)")
     parser.add_argument("--export", help="Export results to file (JSON/CSV)")
     parser.add_argument("--update-db", action="store_true",
                        help="Update device database")

@@ -381,32 +381,57 @@
         </div>
 
         <div class="panel">
-            <h2>System Status</h2>
-            <div id="systemStatus" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 10px 0;">
-                <div><b>Free Heap (SRAM):</b> <span id="freeHeap">-</span></div>
-                <div><b>Min Free Heap:</b> <span id="minFreeHeap">-</span></div>
-                <div id="psramStats" style="display: none;"><b>Free PSRAM:</b> <span id="freePsram">-</span></div>
-                <div id="psramMinStats" style="display: none;"><b>Min Free PSRAM:</b> <span id="minFreePsram">-</span></div>
-                <div><b>CPU Freq:</b> <span id="cpuFreq">-</span> MHz</div>
-                <div><b>WiFi RSSI:</b> <span id="wifiRssi">-</span> dBm</div>
-                <div><b>Temperature:</b> <span id="temperature">-</span></div>
-                <div><b>SDK Version:</b> <span id="sdkVersion">-</span></div>
-            </div>
-            <div id="i2cStatus" style="margin-top: 15px;">
-                <h3 style="font-size: 14px; margin: 10px 0;">I2C Health</h3>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
-                    <div><b>Total TX:</b> <span id="i2cTotal">0</span></div>
-                    <div><b>Failed:</b> <span id="i2cFailed">0</span></div>
-                    <div><b>Error Rate:</b> <span id="i2cErrorRate">0</span>%</div>
-                    <div><b>Last Success:</b> <span id="i2cLastSuccess">-</span></div>
-                </div>
+            <h2>Activity Log</h2>
+            <div class="activity-log" id="activityLog">
+                <!-- Log entries will be added here -->
             </div>
         </div>
 
         <div class="panel">
-            <h2>Activity Log</h2>
-            <div class="activity-log" id="activityLog">
-                <!-- Log entries will be added here -->
+            <h2>System Status</h2>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin: 15px 0;">
+                <!-- Memory Section -->
+                <div style="background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 3px solid #4CAF50;">
+                    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #4CAF50;">Memory</h3>
+                    <div style="display: grid; gap: 8px; font-size: 13px;">
+                        <div><span style="color: #888;">Free Heap (SRAM):</span> <span id="freeHeap" style="float: right; color: #fff;">-</span></div>
+                        <div><span style="color: #888;">Min Free Heap:</span> <span id="minFreeHeap" style="float: right; color: #fff;">-</span></div>
+                        <div id="psramStatsContainer" style="display: none;">
+                            <div style="border-top: 1px solid #444; margin: 8px 0; padding-top: 8px;"></div>
+                            <div><span style="color: #888;">Free PSRAM:</span> <span id="freePsram" style="float: right; color: #fff;">-</span></div>
+                            <div><span style="color: #888;">Min Free PSRAM:</span> <span id="minFreePsram" style="float: right; color: #fff;">-</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Info Section -->
+                <div style="background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 3px solid #2196F3;">
+                    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #2196F3;">System</h3>
+                    <div style="display: grid; gap: 8px; font-size: 13px;">
+                        <div><span style="color: #888;">CPU Freq:</span> <span id="cpuFreq" style="float: right; color: #fff;">-</span></div>
+                        <div><span style="color: #888;">Temperature:</span> <span id="temperature" style="float: right; color: #fff;">-</span></div>
+                        <div><span style="color: #888;">SDK Version:</span> <span id="sdkVersion" style="float: right; color: #fff; font-size: 11px;">-</span></div>
+                    </div>
+                </div>
+
+                <!-- WiFi Section -->
+                <div style="background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 3px solid #FF9800;">
+                    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #FF9800;">Network</h3>
+                    <div style="display: grid; gap: 8px; font-size: 13px;">
+                        <div><span style="color: #888;">WiFi RSSI:</span> <span id="wifiRssi" style="float: right; color: #fff;">-</span></div>
+                    </div>
+                </div>
+
+                <!-- I2C Health Section -->
+                <div style="background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 3px solid #9C27B0;">
+                    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #9C27B0;">I2C Health</h3>
+                    <div style="display: grid; gap: 8px; font-size: 13px;">
+                        <div><span style="color: #888;">Total TX:</span> <span id="i2cTotal" style="float: right; color: #fff;">0</span></div>
+                        <div><span style="color: #888;">Failed:</span> <span id="i2cFailed" style="float: right; color: #fff;">0</span></div>
+                        <div><span style="color: #888;">Error Rate:</span> <span id="i2cErrorRate" style="float: right; color: #fff;">0%</span></div>
+                        <div><span style="color: #888;">Last Success:</span> <span id="i2cLastSuccess" style="float: right; color: #fff; font-size: 11px;">-</span></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -663,11 +688,10 @@
             // PSRAM stats (if available)
             if (system.free_psram !== undefined) {
                 document.getElementById('freePsram').textContent = formatBytes(system.free_psram);
-                document.getElementById('psramStats').style.display = 'block';
+                document.getElementById('psramStatsContainer').style.display = 'block';
             }
             if (system.min_free_psram !== undefined) {
                 document.getElementById('minFreePsram').textContent = formatBytes(system.min_free_psram);
-                document.getElementById('psramMinStats').style.display = 'block';
             }
             if (system.cpu_freq !== undefined) {
                 document.getElementById('cpuFreq').textContent = system.cpu_freq;

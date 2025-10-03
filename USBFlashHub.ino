@@ -202,8 +202,9 @@
 #define ERROR_FLASH_MS      100   // Error pattern flash duration
 #define RESET_PULSE_MS      100   // Default reset pulse duration
 #define RECONNECT_DELAY_MS  30000 // WiFi reconnect delay
-#define HEARTBEAT_INTERVAL  5000  // Status LED heartbeat interval
-#define BROADCAST_INTERVAL  2000  // WebSocket broadcast interval
+#define HEARTBEAT_INTERVAL  5000    // Status LED heartbeat interval
+#define BROADCAST_INTERVAL  2000    // WebSocket broadcast interval
+#define STATS_LOG_INTERVAL  3600000 // Log system stats every hour (ms)
 
 // ============================================
 // USB HUB CONFIGURATION
@@ -698,7 +699,10 @@ struct LogEntry {
 
 class ActivityLogger {
 private:
-  static const uint16_t MAX_ENTRIES = 100;
+  static const uint16_t MAX_ENTRIES_RAM = 100;      // Regular RAM limit
+  static const uint16_t MAX_ENTRIES_PSRAM = 20000;  // PSRAM limit (larger buffer)
+
+  uint16_t MAX_ENTRIES;  // Actual max entries (set at init)
 
   struct LogHeader {
     uint32_t magic;
@@ -712,7 +716,7 @@ private:
   bool usePSRAM;
 
 public:
-  ActivityLogger() : usePSRAM(false), entries(nullptr), header(nullptr) {}
+  ActivityLogger() : usePSRAM(false), entries(nullptr), header(nullptr), MAX_ENTRIES(MAX_ENTRIES_RAM) {}
 
   void begin() {
     // Note: PSRAM is volatile and loses contents on ANY reset (not just power loss)
@@ -721,12 +725,15 @@ public:
 
     // Check for PSRAM and allocate buffer
     if (psramFound()) {
+      MAX_ENTRIES = MAX_ENTRIES_PSRAM;
       header = (LogHeader*)ps_malloc(sizeof(LogHeader));
       entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
       if (entries && header) {
         usePSRAM = true;
         // PSRAM contents are lost on reset, so always initialize
-        Serial.println(F("Activity log using PSRAM (contents cleared on reboot)"));
+        Serial.print(F("Activity log using PSRAM ("));
+        Serial.print(MAX_ENTRIES);
+        Serial.println(F(" entries, contents cleared on reboot)"));
         header->magic = MAGIC_MARKER;
         header->writeIndex = 0;
         header->count = 0;
@@ -735,13 +742,16 @@ public:
     }
 
     if (!entries || !header) {
+      MAX_ENTRIES = MAX_ENTRIES_RAM;
       header = new LogHeader;
       entries = new LogEntry[MAX_ENTRIES];
       header->magic = MAGIC_MARKER;
       header->writeIndex = 0;
       header->count = 0;
       memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
-      Serial.println(F("Activity log using regular RAM"));
+      Serial.print(F("Activity log using regular RAM ("));
+      Serial.print(MAX_ENTRIES);
+      Serial.println(F(" entries)"));
     }
   }
 
@@ -1708,15 +1718,17 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           status["restart_reason"] = restartReason;
           status["restart_time"] = restartTime;
 
-          // ESP32 system status
+          // ESP32 system status - Regular heap (SRAM)
           status["free_heap"] = ESP.getFreeHeap();
           status["heap_size"] = ESP.getHeapSize();
           status["min_free_heap"] = ESP.getMinFreeHeap();
 
-          #ifdef CONFIG_SPIRAM_SUPPORT
-            status["free_psram"] = ESP.getFreePsram();
+          // PSRAM stats (if available)
+          if (ESP.getPsramSize() > 0) {
             status["psram_size"] = ESP.getPsramSize();
-          #endif
+            status["free_psram"] = ESP.getFreePsram();
+            status["min_free_psram"] = ESP.getMinFreePsram();
+          }
 
           status["cpu_freq"] = ESP.getCpuFreqMHz();
           status["flash_size"] = ESP.getFlashChipSize();
@@ -1921,15 +1933,17 @@ void broadcastStatus() {
   system["restart_reason"] = restartReason;
   system["restart_time"] = restartTime;
 
-  // ESP32 system status
+  // ESP32 system status - Regular heap (SRAM)
   system["free_heap"] = ESP.getFreeHeap();
   system["heap_size"] = ESP.getHeapSize();
   system["min_free_heap"] = ESP.getMinFreeHeap();
 
-  #ifdef CONFIG_SPIRAM_SUPPORT
-    system["free_psram"] = ESP.getFreePsram();
+  // PSRAM stats (if available)
+  if (ESP.getPsramSize() > 0) {
     system["psram_size"] = ESP.getPsramSize();
-  #endif
+    system["free_psram"] = ESP.getFreePsram();
+    system["min_free_psram"] = ESP.getMinFreePsram();
+  }
 
   system["cpu_freq"] = ESP.getCpuFreqMHz();
   system["flash_size"] = ESP.getFlashChipSize();
@@ -1966,6 +1980,44 @@ void broadcastStatus() {
   String msg;
   serializeJson(doc, msg);
   wsServer.broadcastTXT(msg);
+}
+
+void logSystemStats() {
+  // Build stats string with all metrics
+  String stats = "";
+
+  // Uptime in hours
+  uint32_t uptimeHours = millis() / 3600000;
+  stats += "up:" + String(uptimeHours) + "h";
+
+  // Heap usage (current/min)
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint32_t minFreeHeap = ESP.getMinFreeHeap();
+  stats += " heap:" + String(freeHeap / 1024) + "/" + String(minFreeHeap / 1024) + "KB";
+
+  // PSRAM usage if available (current/min)
+  if (ESP.getPsramSize() > 0) {
+    uint32_t freePsram = ESP.getFreePsram();
+    uint32_t minFreePsram = ESP.getMinFreePsram();
+    stats += " psram:" + String(freePsram / 1024) + "/" + String(minFreePsram / 1024) + "KB";
+  }
+
+  // Temperature if available (ESP32-S3)
+  #ifdef CONFIG_IDF_TARGET_ESP32S3
+    float temp = temperatureRead();
+    stats += " temp:" + String(temp, 1) + "C";
+  #endif
+
+  // WiFi signal strength
+  if (WiFi.status() == WL_CONNECTED) {
+    int rssi = WiFi.RSSI();
+    stats += " rssi:" + String(rssi) + "dBm";
+  }
+
+  // I2C health
+  stats += " i2c:" + String(i2cHealth.errorRate, 2) + "%";
+
+  activityLogger.log("system_stats", 0, stats.c_str());
 }
 
 void setup() {
@@ -2229,5 +2281,12 @@ void loop() {
     ledController.blinkStatus();
     lastHeartbeat = millis();
     // Watchdog is fed at top of loop, so no need here
+  }
+
+  // Log system stats every hour
+  static uint32_t lastStatsLog = 0;
+  if (millis() - lastStatsLog > STATS_LOG_INTERVAL) {
+    logSystemStats();
+    lastStatsLog = millis();
   }
 }

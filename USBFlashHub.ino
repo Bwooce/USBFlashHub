@@ -694,7 +694,7 @@ struct LogEntry {
   time_t timestamp;
   char action[24];
   uint8_t target;
-  char detail[32];
+  char detail[96];  // Increased to fit hourly stats (up to ~80 chars)
 };
 
 class ActivityLogger {

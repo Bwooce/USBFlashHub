@@ -303,6 +303,9 @@ struct LogEntry {
   char detail[96];  // Increased to fit hourly stats (up to ~80 chars)
 };
 
+// Forward declare global error logging function
+void logError(const char* errorType, uint8_t target, const char* detail);
+
 // ============================================
 // HUB CONTROLLER CLASS
 // ============================================
@@ -373,6 +376,10 @@ public:
           Serial.println(F(")"));
         } else {
           Serial.println(F("Found but init failed!"));
+          // Log to activity log
+          char detail[16];
+          snprintf(detail, sizeof(detail), "0x%02X", HUB_ADDRESSES[i]);
+          logError("hub_init", i + 1, detail);
         }
       } else {
         Serial.print(F("Not found (error="));
@@ -628,6 +635,12 @@ private:
     Serial.print(maxRetries);
     Serial.print(F(" attempts to addr 0x"));
     Serial.println(addr, HEX);
+
+    // Log to activity log
+    char detail[16];
+    snprintf(detail, sizeof(detail), "0x%02X", addr);
+    logError("i2c_write", maxRetries, detail);
+
     return false;
   }
 
@@ -824,6 +837,13 @@ public:
     broadcastLogEntry(entry);
   }
 
+  // Helper for error logging - formats error with context
+  void logError(const char* errorType, uint8_t target = 0, const char* detail = nullptr) {
+    char action[32];
+    snprintf(action, sizeof(action), "error_%s", errorType);
+    log(action, target, detail);
+  }
+
   void broadcastLogEntry(const LogEntry& entry) {
     // External broadcast function will be called from main sketch
     extern void broadcastLogToWebSocket(const struct LogEntry& entry);
@@ -961,6 +981,8 @@ public:
       ntpSynced = true;
     } else {
       Serial.println(F("\nWiFi connection failed"));
+      // Log to activity log
+      logError("wifi_connect", 0, config->getSSID());
     }
   }
 
@@ -1630,6 +1652,11 @@ PinController pinController(BOOT_PIN, RESET_PIN);
 LEDController ledController(STATUS_LED, ACTIVITY_LED);
 ConfigManager configManager;
 ActivityLogger activityLogger;
+
+// Helper function for error logging - can be called from anywhere
+void logError(const char* errorType, uint8_t target = 0, const char* detail = nullptr) {
+  activityLogger.logError(errorType, target, detail);
+}
 WiFiManager wifiManager(&configManager);
 CommandProcessor processor(&hubController, &pinController, &ledController,
                           &configManager, &activityLogger, &wifiManager);

@@ -552,8 +552,7 @@
         }
 
         function setPort(port, state) {
-            const power = state === 'on' ? '500mA' : 'off';
-            if (sendCommand({ cmd: 'port', port: port, power: power })) {
+            if (sendCommand({ cmd: 'port', port: port, enable: state === 'on' })) {
                 addLog(`Turning port ${port} ${state}...`, 'success');
                 // Request status update after a short delay
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
@@ -563,8 +562,9 @@
         }
 
         function setHubPower(hubNum, high) {
-            if (sendCommand({ cmd: 'hub', hub: hubNum, power: high ? '500mA' : '100mA' })) {
-                addLog(`Setting hub ${hubNum} power limit to ${high ? '500mA' : '100mA'}...`, 'success');
+            const powerLevel = high ? '500mA' : '100mA';
+            if (sendCommand({ cmd: 'hub', hub: hubNum, power: powerLevel })) {
+                addLog(`Setting hub ${hubNum} power limit to ${powerLevel}...`, 'success');
                 // Request status update after a short delay
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
@@ -720,14 +720,18 @@
                 // Clear and rebuild entire log when receiving full log from firmware
                 logDiv.innerHTML = '';
 
-                // Firmware sends entries newest-first, display in that order
+                // Firmware sends entries newest-first, append them directly
                 logData.forEach(entry => {
                     // Build message from firmware log entry structure
                     let msg = entry.action || entry.msg || '';
                     if (entry.target) msg += ` [${entry.target}]`;
                     if (entry.detail) msg += ` - ${entry.detail}`;
 
-                    addLogEntry(entry.time, msg, entry.type || '');
+                    // Append directly (don't use addLogEntry which inserts at top)
+                    const logEntry = document.createElement('div');
+                    logEntry.className = `log-entry ${entry.type || ''}`;
+                    logEntry.innerHTML = `<span class="log-time">${entry.time}</span>${msg}`;
+                    logDiv.appendChild(logEntry);
                 });
             }
         }

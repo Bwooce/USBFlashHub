@@ -392,9 +392,9 @@ public:
 
     // Set Output Control Register with initial state
     // Bit 0: Current limit (1=100mA, 0=500mA) - start with 500mA (default)
-    // Bit 3: LED control (0=off)
+    // Bit 3: LED control (1=on, 0=off) - default to on for visibility
     // Bits 4-7: Port control (0=all ports off)
-    hubStates[hubIndex] = 0x00;  // Bit 0 clear for 500mA, all else off
+    hubStates[hubIndex] = 0x08;  // Bit 0 clear for 500mA, bit 3 set for LED on
     wire->beginTransmission(addr);
     wire->write(0x01);  // Output Control Register
     wire->write(hubStates[hubIndex]);
@@ -443,6 +443,13 @@ public:
       return false;
     }
 
+    // Apply power level to hub before enabling port
+    if (powerLevel == POWER_100MA) {
+      updateHubPower(hubIndex, false);  // 100mA
+    } else if (powerLevel == POWER_500MA) {
+      updateHubPower(hubIndex, true);   // 500mA
+    }
+
     // For this hardware, ports are either on or off
     // Power level is controlled per-hub via bit 0
     setPort(hubIndex, portIndex, powerLevel != POWER_OFF);
@@ -467,11 +474,11 @@ public:
     return updateHub(hubIndex);
   }
 
-  // Turn all ports and leds off (maintains 500mA default)
+  // Turn all ports off (maintains 500mA default and LED on)
   void allOff() {
     for (uint8_t i = 0; i < MAX_HUBS; i++) {
       if (connectedHubs[i]) {
-        hubStates[i] = 0x00;  // Bit 0 clear for 500mA (default), all ports/LED off
+        hubStates[i] = 0x08;  // Bit 0 clear for 500mA, bit 3 set for LED on, all ports off
         updateHub(i);
       }
     }
@@ -761,14 +768,15 @@ public:
     JsonArray logs = doc.createNestedArray("log");
 
     // Send entries in reverse order (newest first)
-    uint16_t start = (header->count < MAX_ENTRIES) ? 0 : header->writeIndex;
-    for (int16_t i = header->count - 1; i >= 0; i--) {
+    // The newest entry is at (writeIndex - 1), oldest at writeIndex (when buffer is full)
+    for (int16_t i = 0; i < header->count; i++) {
       // Feed watchdog every 10 entries during log serialization
       if (i % 10 == 0) {
         esp_task_wdt_reset();
       }
 
-      uint16_t idx = (start + i) % MAX_ENTRIES;
+      // Calculate index: start from most recent entry and go backwards
+      uint16_t idx = (header->writeIndex - 1 - i + MAX_ENTRIES) % MAX_ENTRIES;
       JsonObject entry = logs.createNestedObject();
 
       if (entries[idx].timestamp > 0) {
@@ -1203,7 +1211,25 @@ private:
       return;
     }
 
-    // Check for power level
+    // Check for enable parameter (new simple method)
+    if (cmd.containsKey("enable")) {
+      bool enable = cmd["enable"];
+      uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
+      uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
+
+      hub->setPort(hubIndex, portIndex, enable);
+      logger->log(enable ? "port_on" : "port_off", portNum);
+
+      response.clear();
+      response["status"] = "ok";
+      response["port"] = portNum;
+      response["enabled"] = enable;
+      serializeJson(response, Serial);
+      Serial.println();
+      return;
+    }
+
+    // Legacy: Check for power level (for backwards compatibility)
     const char* powerStr = cmd["power"] | "default";
     uint8_t powerLevel = POWER_DEFAULT;
 
@@ -1704,11 +1730,6 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           JsonObject network = status.createNestedObject("network");
           network["ip"] = WiFi.localIP().toString();
           network["connected"] = true;
-
-          // Add confirmation message
-          uint8_t portNum = cmd["port"] | 0;
-          const char* power = cmd["power"] | "unknown";
-          status["msg"] = String("Port ") + portNum + " set to " + power;
 
           // Send full status to all connected clients
           String msg;

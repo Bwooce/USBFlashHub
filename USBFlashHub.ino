@@ -206,6 +206,12 @@
 #define BROADCAST_INTERVAL  2000    // WebSocket broadcast interval
 #define STATS_LOG_INTERVAL  3600000 // Log system stats every hour (ms)
 
+// Timing helper - handles millis() rollover correctly (every ~49.7 days)
+// Uses unsigned integer arithmetic which wraps correctly
+inline bool timerExpired(uint32_t startTime, uint32_t interval) {
+  return (millis() - startTime) >= interval;
+}
+
 // ============================================
 // USB HUB CONFIGURATION
 // ============================================
@@ -275,6 +281,17 @@ struct I2CHealth {
 };
 
 I2CHealth i2cHealth;
+
+// ============================================
+// ACTIVITY LOGGER STRUCTURES
+// ============================================
+// Define LogEntry here so it's globally accessible
+struct LogEntry {
+  time_t timestamp;
+  char action[24];
+  uint8_t target;
+  char detail[96];  // Increased to fit hourly stats (up to ~80 chars)
+};
 
 // ============================================
 // HUB CONTROLLER CLASS
@@ -369,47 +386,23 @@ public:
 
     uint8_t addr = HUB_ADDRESSES[hubIndex];
 
-    // Set Configuration Register (all pins as outputs)
-    wire->beginTransmission(addr);
-    wire->write(0x03);  // Configuration register address
-    wire->write(0x00);  // Sets all pins as outputs
-    uint8_t error = wire->endTransmission();
-    if (error != 0) {
-      i2cHealth.recordFailure();
-      return false;
+    // Set Configuration Register (all pins as outputs) - with retry
+    if (!writeI2CRegister(addr, 0x03, 0x00)) {
+      return false;  // Failed to configure
     }
-    i2cHealth.recordSuccess();
 
-    // Set Polarity Inversion Register (disable inversion)
-    wire->beginTransmission(addr);
-    wire->write(0x02);  // Polarity Inversion Register
-    wire->write(0x00);  // Disable inversion on all pins
-    error = wire->endTransmission();
-    if (error == 0) {
-      i2cHealth.recordSuccess();
-    } else {
-      i2cHealth.recordFailure();
-    }
+    // Set Polarity Inversion Register (disable inversion) - with retry
+    writeI2CRegister(addr, 0x02, 0x00);  // Non-critical if fails
 
     // Set Output Control Register with initial state
     // Bit 0: Current limit (1=100mA, 0=500mA) - start with 500mA (default)
     // Bit 3: LED control (1=on, 0=off) - default to on for visibility
     // Bits 4-7: Port control (0=all ports off)
     hubStates[hubIndex] = 0x08;  // Bit 0 clear for 500mA, bit 3 set for LED on
-    wire->beginTransmission(addr);
-    wire->write(0x01);  // Output Control Register
-    wire->write(hubStates[hubIndex]);
-    error = wire->endTransmission();
-    if (error == 0) {
-      i2cHealth.recordSuccess();
-    } else {
-      i2cHealth.recordFailure();
-    }
+    writeI2CRegister(addr, 0x01, hubStates[hubIndex]);  // with retry
 
     // Port 4 defaults to on for some reason, make sure it's off
     setPort(hubIndex, 3, false);  // Port 4 is index 3
-
-    // LEDs are controlled by bit 3, already off
 
     return true;
   }
@@ -593,22 +586,45 @@ public:
   }
 
 private:
+  // I2C write with retry logic and exponential backoff
+  bool writeI2CRegister(uint8_t addr, uint8_t reg, uint8_t value, uint8_t maxRetries = 3) {
+    for (uint8_t attempt = 0; attempt < maxRetries; attempt++) {
+      wire->beginTransmission(addr);
+      wire->write(reg);
+      wire->write(value);
+      uint8_t error = wire->endTransmission();
+
+      if (error == 0) {
+        i2cHealth.recordSuccess();
+        return true;
+      }
+
+      // Exponential backoff before retry (10ms, 20ms, 30ms)
+      if (attempt < maxRetries - 1) {
+        delay(10 * (attempt + 1));
+        esp_task_wdt_reset();  // Feed watchdog during retry
+      }
+    }
+
+    // All retries failed
+    i2cHealth.recordFailure();
+    Serial.print(F("I2C write failed after "));
+    Serial.print(maxRetries);
+    Serial.print(F(" attempts to addr 0x"));
+    Serial.println(addr, HEX);
+    return false;
+  }
+
   bool updateHub(uint8_t hubIndex) {
     if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return false;
 
-    wire->beginTransmission(HUB_ADDRESSES[hubIndex]);
-    wire->write(0b00000001); // Output port register
-    wire->write(hubStates[hubIndex]);
-    uint8_t error = wire->endTransmission();
+    bool success = writeI2CRegister(HUB_ADDRESSES[hubIndex], 0x01, hubStates[hubIndex]);
 
-    if (error == 0) {
-      i2cHealth.recordSuccess();
+    if (success) {
       lastActivity = millis();
-      return true;
-    } else {
-      i2cHealth.recordFailure();
     }
-    return false;
+
+    return success;
   }
 
   const char* getPowerString(uint8_t level) {
@@ -690,12 +706,7 @@ public:
 // ============================================
 // ACTIVITY LOGGER CLASS
 // ============================================
-struct LogEntry {
-  time_t timestamp;
-  char action[24];
-  uint8_t target;
-  char detail[96];  // Increased to fit hourly stats (up to ~80 chars)
-};
+// LogEntry struct defined earlier with I2CHealth for global visibility
 
 class ActivityLogger {
 private:
@@ -799,7 +810,7 @@ public:
 
   void broadcastLogEntry(const LogEntry& entry) {
     // External broadcast function will be called from main sketch
-    extern void broadcastLogToWebSocket(const LogEntry& entry);
+    extern void broadcastLogToWebSocket(const struct LogEntry& entry);
     broadcastLogToWebSocket(entry);
   }
 
@@ -808,12 +819,24 @@ public:
 
     JsonArray logs = doc.createNestedArray("log");
 
+    // Limit entries to prevent WDT timeout with large logs
+    const uint16_t MAX_LOG_ENTRIES = 1000;  // Limit response size
+    uint16_t entriesToSend = (header->count > MAX_LOG_ENTRIES) ? MAX_LOG_ENTRIES : header->count;
+
+    uint32_t startTime = millis();
+    const uint32_t MAX_PROCESSING_TIME = 5000;  // 5 second timeout
+
     // Send entries in reverse order (newest first)
     // The newest entry is at (writeIndex - 1), oldest at writeIndex (when buffer is full)
-    for (int16_t i = 0; i < header->count; i++) {
-      // Feed watchdog every 10 entries during log serialization
-      if (i % 10 == 0) {
+    for (int16_t i = 0; i < entriesToSend; i++) {
+      // Feed watchdog every 5 entries and check timeout
+      if (i % 5 == 0) {
         esp_task_wdt_reset();
+        // Timeout safety - bail out if taking too long
+        if (millis() - startTime > MAX_PROCESSING_TIME) {
+          Serial.printf("Log serialization timeout after %d entries\n", i);
+          break;
+        }
       }
 
       // Calculate index: start from most recent entry and go backwards
@@ -836,6 +859,7 @@ public:
     }
 
     doc["count"] = header->count;
+    doc["entries_sent"] = entriesToSend;
     doc["psram"] = usePSRAM;
   }
 };
@@ -1605,6 +1629,30 @@ void IRAM_ATTR emergencyStopISR() {
   emergencyStopFlag = true;
 }
 
+// Broadcast log entry to WebSocket clients
+void broadcastLogToWebSocket(const struct LogEntry& entry) {
+  StaticJsonDocument<256> doc;
+  doc["type"] = "log_entry";
+
+  if (entry.timestamp > 0) {
+    struct tm timeinfo;
+    localtime_r(&entry.timestamp, &timeinfo);
+    char timeStr[32];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    doc["time"] = timeStr;
+  } else {
+    doc["time"] = entry.timestamp;
+  }
+
+  doc["action"] = entry.action;
+  if (entry.target > 0) doc["target"] = entry.target;
+  if (strlen(entry.detail) > 0) doc["detail"] = entry.detail;
+
+  String msg;
+  serializeJson(doc, msg);
+  wsServer.broadcastTXT(msg);
+}
+
 // ============================================
 // WEB SERVER HANDLERS
 // ============================================
@@ -1659,30 +1707,6 @@ void handleWebStatus() {
   String response;
   serializeJson(doc, response);
   webServer.send(200, "application/json", response);
-}
-
-// Broadcast log entry to WebSocket clients
-void broadcastLogToWebSocket(const LogEntry& entry) {
-  StaticJsonDocument<256> doc;
-  doc["type"] = "log_entry";
-
-  if (entry.timestamp > 0) {
-    struct tm timeinfo;
-    localtime_r(&entry.timestamp, &timeinfo);
-    char timeStr[32];
-    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-    doc["time"] = timeStr;
-  } else {
-    doc["time"] = entry.timestamp;
-  }
-
-  doc["action"] = entry.action;
-  if (entry.target > 0) doc["target"] = entry.target;
-  if (strlen(entry.detail) > 0) doc["detail"] = entry.detail;
-
-  String msg;
-  serializeJson(doc, msg);
-  wsServer.broadcastTXT(msg);
 }
 
 // WebSocket event handler

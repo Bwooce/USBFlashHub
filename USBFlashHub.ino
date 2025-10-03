@@ -375,7 +375,7 @@ public:
           Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
           Serial.println(F(")"));
         } else {
-          Serial.println(F("Found but init failed!"));
+          if (Serial) Serial.println(F("Found but init failed!"));
           // Log to activity log
           char detail[16];
           snprintf(detail, sizeof(detail), "0x%02X", HUB_ADDRESSES[i]);
@@ -631,10 +631,12 @@ private:
 
     // All retries failed
     i2cHealth.recordFailure();
-    Serial.print(F("I2C write failed after "));
-    Serial.print(maxRetries);
-    Serial.print(F(" attempts to addr 0x"));
-    Serial.println(addr, HEX);
+    if (Serial) {
+      Serial.print(F("I2C write failed after "));
+      Serial.print(maxRetries);
+      Serial.print(F(" attempts to addr 0x"));
+      Serial.println(addr, HEX);
+    }
 
     // Log to activity log
     char detail[16];
@@ -980,7 +982,7 @@ public:
       Serial.println(F("NTP time sync started"));
       ntpSynced = true;
     } else {
-      Serial.println(F("\nWiFi connection failed"));
+      if (Serial) Serial.println(F("\nWiFi connection failed"));
       // Log to activity log
       logError("wifi_connect", 0, config->getSSID());
     }

@@ -42,22 +42,22 @@ port_groups:
   esp32_dev:
     description: "ESP32 Development Ports"
     ports: [1, 2, 3, 4]
-    default_power: "500mA"
+    default_power: "high"
 
   stm32_dev:
     description: "STM32 Development Ports"
     ports: [5, 6, 7, 8]
-    default_power: "500mA"
+    default_power: "high"
 
   testing:
     description: "Automated Testing Ports"
     ports: [9, 10, 11, 12]
-    default_power: "100mA"
+    default_power: "low"
 
   production:
     description: "Production Programming"
     ports: [13, 14, 15, 16]
-    default_power: "500mA"
+    default_power: "high"
 
 # Bootloader sequences for different device types
 bootloader_sequences:
@@ -103,14 +103,14 @@ bootloader_sequences:
 
 # Power management settings
 power:
-  default_level: "500mA"
+  default_level: "high"
   power_cycle_delay: 1.0  # seconds
   startup_delay: 2.0      # seconds after power on
 
   # Power limits per hub
   hub_limits:
     total_power: "2A"      # Total power budget per hub
-    port_power: "500mA"    # Max power per port
+    port_power: "high"    # Max power per port
 
 # Automation settings
 automation:

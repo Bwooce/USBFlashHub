@@ -11,7 +11,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "wait_for_device"
@@ -56,7 +56,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "wait_for_device"
@@ -95,7 +95,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "wait_for_device"
@@ -129,7 +129,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "wait_for_device"
@@ -159,7 +159,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "wait_for_device"
@@ -198,7 +198,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "wait_for_device"
@@ -228,7 +228,7 @@ rules:
       - action: "power_on"
         params:
           port: "auto"
-          power_level: "500mA"
+          power_level: "high"
         timeout: 5.0
 
       - action: "wait_for_device"

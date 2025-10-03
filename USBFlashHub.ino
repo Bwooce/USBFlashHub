@@ -689,16 +689,16 @@ public:
 // ============================================
 // ACTIVITY LOGGER CLASS
 // ============================================
+struct LogEntry {
+  time_t timestamp;
+  char action[24];
+  uint8_t target;
+  char detail[32];
+};
+
 class ActivityLogger {
 private:
   static const uint16_t MAX_ENTRIES = 100;
-
-  struct LogEntry {
-    time_t timestamp;
-    char action[24];
-    uint8_t target;
-    char detail[32];
-  };
 
   struct LogHeader {
     uint32_t magic;
@@ -760,6 +760,15 @@ public:
 
     header->writeIndex = (header->writeIndex + 1) % MAX_ENTRIES;
     if (header->count < MAX_ENTRIES) header->count++;
+
+    // Broadcast this log entry to all WebSocket clients
+    broadcastLogEntry(entry);
+  }
+
+  void broadcastLogEntry(const LogEntry& entry) {
+    // External broadcast function will be called from main sketch
+    extern void broadcastLogToWebSocket(const LogEntry& entry);
+    broadcastLogToWebSocket(entry);
   }
 
   void getLog(JsonDocument& doc) {
@@ -1137,9 +1146,6 @@ public:
       return;
     }
 
-    // Log the command
-    logger->log(action);
-
     // Port control commands
     if (strcmp(action, "port") == 0) {
       handlePortCommand(cmd);
@@ -1218,7 +1224,11 @@ private:
       uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
 
       hub->setPort(hubIndex, portIndex, enable);
-      logger->log(enable ? "port_on" : "port_off", portNum);
+
+      // Log with [hub:port] format
+      char detail[16];
+      snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
+      logger->log(enable ? "port_on" : "port_off", 0, detail);
 
       response.clear();
       response["status"] = "ok";
@@ -1242,7 +1252,13 @@ private:
     }
 
     if (hub->setPortByNumber(portNum, powerLevel)) {
-      logger->log("port_set", portNum, powerStr);
+      // Log with [hub:port] format
+      uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
+      uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
+      char detail[32];
+      snprintf(detail, sizeof(detail), "[%d:%d] %s", hubIndex + 1, portIndex + 1, powerStr);
+      logger->log("port_set", 0, detail);
+
       response.clear();
       response["status"] = "ok";
       response["port"] = portNum;
@@ -1268,7 +1284,12 @@ private:
     if (cmd.containsKey("led")) {
       bool ledOn = cmd["led"].as<bool>();
       hub->updateHubLED(hubIndex, ledOn);
-      logger->log(ledOn ? "hub_led_on" : "hub_led_off", hubNum);
+
+      // Log with [hub:] format
+      char detail[16];
+      snprintf(detail, sizeof(detail), "[%d:]", hubNum);
+      logger->log(ledOn ? "hub_led_on" : "hub_led_off", 0, detail);
+
       sendOK(ledOn ? "Hub LEDs turned on" : "Hub LEDs turned off");
       return;
     }
@@ -1278,7 +1299,12 @@ private:
       const char* power = cmd["power"];
       bool high = (strcmp(power, "500mA") == 0);
       hub->updateHubPower(hubIndex, high);
-      logger->log(high ? "hub_power_500mA" : "hub_power_100mA", hubNum);
+
+      // Log with [hub:] format
+      char detail[16];
+      snprintf(detail, sizeof(detail), "[%d:]", hubNum);
+      logger->log(high ? "hub_power_500mA" : "hub_power_100mA", 0, detail);
+
       sendOK(high ? "Hub power set to 500mA" : "Hub power set to 100mA");
       return;
     }
@@ -1287,7 +1313,10 @@ private:
     if (cmd.containsKey("state")) {
       uint8_t state = cmd["state"];
       if (hub->setHub(hubNum, state)) {
-        logger->log("hub_set", hubNum);
+        // Log with [hub:] format
+        char detail[16];
+        snprintf(detail, sizeof(detail), "[%d:]", hubNum);
+        logger->log("hub_set", 0, detail);
         sendOK("Hub state updated");
       } else {
         sendError("Failed to set hub state");
@@ -1597,6 +1626,30 @@ void handleWebStatus() {
   webServer.send(200, "application/json", response);
 }
 
+// Broadcast log entry to WebSocket clients
+void broadcastLogToWebSocket(const LogEntry& entry) {
+  StaticJsonDocument<256> doc;
+  doc["type"] = "log_entry";
+
+  if (entry.timestamp > 0) {
+    struct tm timeinfo;
+    localtime_r(&entry.timestamp, &timeinfo);
+    char timeStr[32];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    doc["time"] = timeStr;
+  } else {
+    doc["time"] = entry.timestamp;
+  }
+
+  doc["action"] = entry.action;
+  if (entry.target > 0) doc["target"] = entry.target;
+  if (strlen(entry.detail) > 0) doc["detail"] = entry.detail;
+
+  String msg;
+  serializeJson(doc, msg);
+  wsServer.broadcastTXT(msg);
+}
+
 // WebSocket event handler
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
   switch(type) {
@@ -1751,7 +1804,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           } else {
             bool state = cmd["state"] | false;
             if (strcmp(action, "reset") == 0) {
-              response["msg"] = state ? "Reset released (HIGH)" : "Reset asserted (LOW)";
+              response["msg"] = state ? "Reset asserted (LOW)" : "Reset released (HIGH)";
             } else {
               response["msg"] = state ? "Boot pin HIGH" : "Boot pin LOW";
             }

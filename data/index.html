@@ -366,8 +366,8 @@
                     <div class="control-group">
                         <label>Reset Pin:</label>
                         <span id="resetState" class="pin-state high">HIGH</span>
-                        <button class="btn-control" onclick="setPinState('reset', false)">Assert</button>
-                        <button class="btn-control" onclick="setPinState('reset', true)">Release</button>
+                        <button class="btn-control" onclick="setPinState('reset', true)">Assert</button>
+                        <button class="btn-control" onclick="setPinState('reset', false)">Release</button>
                         <button class="btn-control" onclick="pulseReset()">Pulse</button>
                     </div>
                 </div>
@@ -463,6 +463,11 @@
         function handleMessage(data) {
             console.log('Received message:', data);
 
+            // Handle real-time log entry
+            if (data.type === 'log_entry') {
+                addLogEntryFromServer(data);
+            }
+
             // Handle status response that includes hubs info
             if (data.hubs !== undefined) {
                 updateHubs(data.hubs);
@@ -553,7 +558,6 @@
 
         function setPort(port, state) {
             if (sendCommand({ cmd: 'port', port: port, enable: state === 'on' })) {
-                addLog(`Turning port ${port} ${state}...`, 'success');
                 // Request status update after a short delay
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
@@ -564,7 +568,6 @@
         function setHubPower(hubNum, high) {
             const powerLevel = high ? '500mA' : '100mA';
             if (sendCommand({ cmd: 'hub', hub: hubNum, power: powerLevel })) {
-                addLog(`Setting hub ${hubNum} power limit to ${powerLevel}...`, 'success');
                 // Request status update after a short delay
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
@@ -574,7 +577,6 @@
 
         function setHubLED(hubNum, on) {
             if (sendCommand({ cmd: 'hub', hub: hubNum, led: on })) {
-                addLog(`Turning hub ${hubNum} LEDs ${on ? 'on' : 'off'}...`, 'success');
                 // Request status update after a short delay
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
@@ -724,8 +726,8 @@
                 logData.forEach(entry => {
                     // Build message from firmware log entry structure
                     let msg = entry.action || entry.msg || '';
-                    if (entry.target) msg += ` [${entry.target}]`;
-                    if (entry.detail) msg += ` - ${entry.detail}`;
+                    // Detail now contains [hub:port] format, so show it directly
+                    if (entry.detail) msg += ` ${entry.detail}`;
 
                     // Append directly (don't use addLogEntry which inserts at top)
                     const logEntry = document.createElement('div');
@@ -733,6 +735,26 @@
                     logEntry.innerHTML = `<span class="log-time">${entry.time}</span>${msg}`;
                     logDiv.appendChild(logEntry);
                 });
+            }
+        }
+
+        function addLogEntryFromServer(entry) {
+            const logDiv = document.getElementById('activityLog');
+
+            // Build message from firmware log entry structure
+            let msg = entry.action || '';
+            // Detail now contains [hub:port] format
+            if (entry.detail) msg += ` ${entry.detail}`;
+
+            // Create log entry and insert at top for real-time display
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry ${entry.type || ''}`;
+            logEntry.innerHTML = `<span class="log-time">${entry.time}</span>${msg}`;
+            logDiv.insertBefore(logEntry, logDiv.firstChild);
+
+            // Keep only last 100 entries
+            while (logDiv.children.length > 100) {
+                logDiv.removeChild(logDiv.lastChild);
             }
         }
 

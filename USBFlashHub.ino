@@ -700,7 +700,7 @@ struct LogEntry {
 class ActivityLogger {
 private:
   static const uint16_t MAX_ENTRIES_RAM = 100;      // Regular RAM limit
-  static const uint16_t MAX_ENTRIES_PSRAM = 20000;  // PSRAM limit (larger buffer)
+  static const uint16_t MAX_ENTRIES_PSRAM = 10000;  // PSRAM limit (~1.3MB, leaves room for other uses)
 
   uint16_t MAX_ENTRIES;  // Actual max entries (set at init)
 
@@ -725,7 +725,14 @@ public:
 
     // Check for PSRAM and allocate buffer
     if (psramFound()) {
-      MAX_ENTRIES = MAX_ENTRIES_PSRAM;
+      // Calculate max entries based on available PSRAM (use 75% to leave headroom)
+      size_t psramSize = ESP.getPsramSize();
+      size_t maxPsramForLog = (psramSize * 75) / 100;
+      uint16_t calculatedEntries = maxPsramForLog / sizeof(LogEntry);
+
+      // Cap at MAX_ENTRIES_PSRAM or calculated size, whichever is smaller
+      MAX_ENTRIES = (calculatedEntries < MAX_ENTRIES_PSRAM) ? calculatedEntries : MAX_ENTRIES_PSRAM;
+
       header = (LogHeader*)ps_malloc(sizeof(LogHeader));
       entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
       if (entries && header) {
@@ -733,7 +740,9 @@ public:
         // PSRAM contents are lost on reset, so always initialize
         Serial.print(F("Activity log using PSRAM ("));
         Serial.print(MAX_ENTRIES);
-        Serial.println(F(" entries, contents cleared on reboot)"));
+        Serial.print(F(" entries = "));
+        Serial.print((MAX_ENTRIES * sizeof(LogEntry)) / 1024);
+        Serial.println(F("KB, contents cleared on reboot)"));
         header->magic = MAGIC_MARKER;
         header->writeIndex = 0;
         header->count = 0;

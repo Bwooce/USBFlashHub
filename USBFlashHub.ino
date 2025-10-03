@@ -1317,9 +1317,9 @@ private:
 
     if (strcmp(powerStr, "off") == 0) {
       powerLevel = POWER_OFF;
-    } else if (strcmp(powerStr, "low") == 0 || strcmp(powerStr, "100mA") == 0) {
+    } else if (strcmp(powerStr, "low") == 0) {
       powerLevel = POWER_LOW;
-    } else if (strcmp(powerStr, "high") == 0 || strcmp(powerStr, "500mA") == 0) {
+    } else if (strcmp(powerStr, "high") == 0) {
       powerLevel = POWER_HIGH;
     }
 
@@ -1369,7 +1369,7 @@ private:
     // Handle power control
     if (cmd.containsKey("power")) {
       const char* power = cmd["power"];
-      bool high = (strcmp(power, "high") == 0 || strcmp(power, "500mA") == 0);
+      bool high = (strcmp(power, "high") == 0);
       hub->updateHubPower(hubIndex, high);
 
       // Log with [hub:] format

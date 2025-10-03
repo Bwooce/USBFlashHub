@@ -1,6 +1,10 @@
 # USBFlashHub
 
-ESP32-S2/S3/C3 controller for USB hub management and microcontroller programming. Controls Jim Heaney's I2C USB Hub hardware with simplified static port numbering and direct pin control.
+ESP32-S2/S3/C3 controller for USB hub management and microcontroller programming.
+
+**Hardware-Specific:** This firmware is designed exclusively for [Jim Heaney's I2C-Controlled USB Hub](https://github.com/JimHeaney/i2c-usb-hub) hardware. It will not work with other USB hubs.
+
+Provides simplified static port numbering and direct pin control for the I2C USB Hub hardware.
 
 ## Features
 
@@ -24,7 +28,12 @@ ESP32-S2/S3/C3 controller for USB hub management and microcontroller programming
 - **ESP32** (Original)
 
 ### Hub Hardware
-Compatible with Jim Heaney's I2C-controlled USB Hub using PCA9557PW I/O expanders at addresses 0x18-0x1F.
+
+**This firmware is designed exclusively for [Jim Heaney's I2C-Controlled USB Hub](https://github.com/JimHeaney/i2c-usb-hub).**
+
+- Uses PCA9557PW I2C GPIO expanders at addresses 0x18-0x1F
+- MT9700 load switches for per-port current limiting
+- For complete hardware specifications, schematics, and BOM, see the [hardware repository](https://github.com/JimHeaney/i2c-usb-hub)
 
 ## Quick Start
 
@@ -145,10 +154,14 @@ python3 testing_agent.py --config test_rules.yaml
 
 The hub supports three power levels: **off**, **low**, and **high**.
 
-**Important:** The actual current values depend on the resistor configuration in your specific hardware:
-- Formula: **6.8kΩ / R_ISET = Current in Amps** (per PCA9557PW datasheet)
-- Typical values: ~120mA (low) and ~240mA (high) with common resistors
-- Check your hub's schematic/BOM for actual R_ISET resistor values
+**Important:** The actual current values depend on the resistor configuration in your specific hardware build:
+- Current limiting is performed by **MT9700 load switch chips** with series-switched resistor ladder on SET pin
+- **MT9700 formula:** I_LIMIT = 6.8kΩ / R_SET
+- **Current BOM values:** Two 30kΩ resistors in series-switched configuration
+  - High power: ~227mA (one 30kΩ resistor)
+  - Low power: ~113mA (both 30kΩ resistors in series = 60kΩ)
+- **Hardware configurable** - resistor values can be changed to adjust current limits
+- For resistor selection and schematic details, see [Jim Heaney's hardware repository](https://github.com/JimHeaney/i2c-usb-hub)
 
 ## Port Numbering
 
@@ -228,9 +241,19 @@ The system maintains a circular buffer activity log:
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## Credits
+## Hardware Design
 
-Based on Jim Heaney's I2C USB Hub hardware design.
+This firmware is designed exclusively for **Jim Heaney's I2C-Controlled USB Hub** hardware.
+
+**Hardware Repository:** https://github.com/JimHeaney/i2c-usb-hub
+
+The hardware design includes:
+- Detailed schematics and PCB layouts
+- Bill of Materials (BOM)
+- Design notes and assembly instructions
+- Current limiting resistor configurations
+
+**Important:** This software will not work with other USB hubs. Consult the hardware repository for build instructions, component specifications, and design documentation.
 
 ## Documentation
 

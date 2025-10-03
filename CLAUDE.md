@@ -93,18 +93,22 @@ EMERGENCY_BTN: GPIO 0
 ### Power Levels
 ```
 POWER_OFF: 0x00 (disabled)
-POWER_LOW: 0x01 (Lower current limit)
-POWER_HIGH: 0x03 (Higher current limit, default)
+POWER_LOW: 0x01 (Lower current limit - bit 0 set)
+POWER_HIGH: 0x03 (Higher current limit - bit 0 clear, default)
 ```
 
 **Important - Actual Current Values:**
-The actual current limits depend on the resistor configuration per the PCA9557PW datasheet.
-- **Formula:** 6.8kΩ / R_ISET = Current in Amps
-- **Typical values** (depends on your specific hardware BOM):
-  - Low power: ~120mA (with 57kΩ resistor)
-  - High power: ~240mA (with 28kΩ resistor)
-- **Not** the USB spec 100mA/500mA values
-- Check your hub's schematic/BOM for actual R_ISET resistor values
+The actual current limits are set by the MT9700 load switch chips with a **series-switched resistor ladder** on the SET pin:
+- **MT9700 formula:** I_LIMIT = 6.8kΩ / R_SET (kΩ)
+- **Hardware implementation:** PCA9557 GPIO bit 0 switches a second resistor in/out of series
+- **Current BOM configuration:** Two 30kΩ resistors
+  - High power (bit 0=0): One resistor (30kΩ) → 6.8/30 = **~227mA**
+  - Low power (bit 0=1): Both resistors in series (60kΩ) → 6.8/60 = **~113mA**
+- **Hardware configurable** - resistor values can be changed in Jim Heaney's design
+- **Not USB spec values** - this implementation does not use standard 100mA/500mA limits
+- For schematic and resistor selection details:
+  - [Jim Heaney's hardware repository](https://github.com/JimHeaney/i2c-usb-hub) (BOM and design notes)
+  - MT9700 datasheet for SET pin configuration
 
 ## Activity Logging
 

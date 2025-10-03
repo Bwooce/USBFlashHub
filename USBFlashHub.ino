@@ -42,10 +42,14 @@
 //   {"cmd":"config"}                                                 // Get config
 //
 // Port Numbering:
-//   Hub 1 (0x44): Ports 1-4
-//   Hub 2 (0x45): Ports 5-8
-//   Hub 3 (0x46): Ports 9-12
-//   Hub 4 (0x47): Ports 13-16
+//   Hub 1 (0x18): Ports 1-4
+//   Hub 2 (0x19): Ports 5-8
+//   Hub 3 (0x1A): Ports 9-12
+//   Hub 4 (0x1B): Ports 13-16
+//   Hub 5 (0x1C): Ports 17-20
+//   Hub 6 (0x1D): Ports 21-24
+//   Hub 7 (0x1E): Ports 25-28
+//   Hub 8 (0x1F): Ports 29-32
 //
 // ============================================
 // RESPONSE FORMATS
@@ -234,14 +238,16 @@ const uint8_t HUB_ADDRESSES[MAX_HUBS] = {
 };
 
 // USB Power levels
-// Bit patterns for power control:
-// Bits [1:0] control power level:
-// NOTE: Actual current values depend on resistor configuration per datasheet
-// Formula: 6.8k / R_ISET = Current in Amps
-// Typical values with common resistors: ~120mA (low), ~240mA (high)
+// Hardware uses MT9700 load switch with series-switched resistor ladder on SET pin
+// PCA9557 GPIO bit 0 switches second resistor in/out of series
+// MT9700 formula: I_LIMIT = 6.8kΩ / R_SET
+// Current BOM: Two 30kΩ resistors (configurable in hardware)
+//   - High power (bit 0=0): One resistor (30kΩ) → ~227mA
+//   - Low power (bit 0=1): Both resistors in series (60kΩ) → ~113mA
+// NOTE: Actual current values depend on hardware resistor configuration
 #define POWER_OFF     0x00  // Port disabled
-#define POWER_LOW     0x01  // Lower current limit
-#define POWER_HIGH    0x03  // Higher current limit (default)
+#define POWER_LOW     0x01  // Lower current limit (bit 0=1, more resistance)
+#define POWER_HIGH    0x03  // Higher current limit (bit 0=0, less resistance, default)
 #define POWER_DEFAULT POWER_HIGH
 
 // ============================================
@@ -390,6 +396,12 @@ public:
 
     uint8_t addr = HUB_ADDRESSES[hubIndex];
 
+    // PCA9557 Register Map (I2C GPIO Expander):
+    //   0x00: Input Port (read-only) - reflects pin states
+    //   0x01: Output Port (R/W) - controls output pins
+    //   0x02: Polarity Inversion (R/W) - inverts input readings
+    //   0x03: Configuration (R/W) - sets pin direction (1=input, 0=output)
+
     // Set Configuration Register (all pins as outputs) - with retry
     if (!writeI2CRegister(addr, 0x03, 0x00)) {
       return false;  // Failed to configure
@@ -399,9 +411,9 @@ public:
     writeI2CRegister(addr, 0x02, 0x00);  // Non-critical if fails
 
     // Set Output Control Register with initial state
-    // Bit 0: Current limit (1=low, 0=high) - start with high power (default)
+    // Bit 0: Current limit control (1=low power, 0=high power) - controls MT9700 SET pin resistor
     // Bit 3: LED control (1=on, 0=off) - default to on for visibility
-    // Bits 4-7: Port control (0=all ports off)
+    // Bits 4-7: Port control (1=on, 0=off) - individual port enable/disable
     hubStates[hubIndex] = 0x08;  // Bit 0 clear for high power, bit 3 set for LED on
     writeI2CRegister(addr, 0x01, hubStates[hubIndex]);  // with retry
 

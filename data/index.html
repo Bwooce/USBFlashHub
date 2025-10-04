@@ -565,6 +565,14 @@
 
         function updateHubs(hubsData) {
             const container = document.getElementById('hubsContainer');
+
+            // Don't rebuild if user is actively editing a port name
+            const activeInput = document.activeElement;
+            if (activeInput && activeInput.classList.contains('port-name-input')) {
+                console.log('Skipping hub update - user is editing port name');
+                return;
+            }
+
             container.innerHTML = '';
 
             if (!hubsData || hubsData.length === 0) {
@@ -610,9 +618,11 @@
                         <input type="text" class="port-name-input"
                                placeholder="Name..."
                                value="${portName}"
+                               data-original="${portName}"
+                               data-port="${port.num}"
                                maxlength="10"
                                pattern="[A-Za-z0-9_-]*"
-                               onblur="setPortName(${port.num}, this.value)"
+                               onblur="savePortNameIfChanged(this)"
                                onkeypress="if(event.key==='Enter') this.blur()">
                         <div class="port-status">${port.enabled ? 'ON' : 'OFF'}</div>
                         <div class="port-controls">
@@ -655,18 +665,27 @@
             }
         }
 
+        function savePortNameIfChanged(input) {
+            const port = parseInt(input.dataset.port);
+            const newName = input.value.trim();
+            const originalName = input.dataset.original;
+
+            // Only save if value changed
+            if (newName === originalName) {
+                return;
+            }
+
+            setPortName(port, newName);
+        }
+
         function setPortName(port, name) {
             // Validate name: max 10 chars, alphanumeric/_/- only
             if (name && name.length > 10) {
                 addLog(`Port name too long (max 10 chars)`, 'error');
-                // Reset input to previous value
-                setTimeout(() => sendCommand({ cmd: 'status' }), 100);
                 return;
             }
             if (name && !/^[A-Za-z0-9_-]*$/.test(name)) {
                 addLog(`Invalid port name (only letters, numbers, _ and - allowed)`, 'error');
-                // Reset input to previous value
-                setTimeout(() => sendCommand({ cmd: 'status' }), 100);
                 return;
             }
 
@@ -674,7 +693,8 @@
             if (sendCommand({ cmd: 'portname', port: port, name: name })) {
                 // Update local cache
                 window.portNames[port] = name;
-                // Don't log success - server will send confirmation
+                // Request status update to refresh UI
+                setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
                 addLog(`Failed to set port name - not connected`, 'error');
             }

@@ -147,6 +147,13 @@ python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws
 {"cmd":"port","port":3,"enable":true}      // Legacy enable/disable
 ```
 
+### Port Naming
+```json
+{"cmd":"portname","port":5,"name":"ESP32-Dev"}  // Set port name (max 10 chars)
+{"cmd":"portname","port":5,"name":""}           // Clear port name
+```
+**Constraints:** Max 10 characters, alphanumeric/_/- only, no spaces. Names are stored persistently in NVS (Non-Volatile Storage) and included in activity logs and status responses.
+
 ### Hub Control
 ```json
 {"cmd":"hub","hub":1,"state":255}          // Set raw hub state

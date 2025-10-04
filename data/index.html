@@ -167,6 +167,27 @@
             color: #4CAF50;
         }
 
+        .port-name-input {
+            width: 100%;
+            padding: 4px 6px;
+            margin-bottom: 8px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            font-size: 11px;
+            text-align: center;
+            font-family: monospace;
+        }
+
+        .port-name-input:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+
+        .port-name-input::placeholder {
+            color: #aaa;
+            font-style: italic;
+        }
+
         .port-controls {
             display: flex;
             gap: 5px;
@@ -213,6 +234,11 @@
             color: white;
             font-weight: bold;
             box-shadow: 0 2px 4px rgba(103, 58, 183, 0.3);
+        }
+
+        .btn-inactive {
+            background: #9e9e9e;
+            color: #666;
         }
 
         .control-section {
@@ -442,6 +468,7 @@
         let reconnectTimer;
         let bootPinState = false;
         let resetPinState = true;
+        window.portNames = {};
 
         function initWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -494,6 +521,11 @@
             // Handle real-time log entry
             if (data.type === 'log_entry') {
                 addLogEntryFromServer(data);
+            }
+
+            // Handle port names from status response
+            if (data.portnames !== undefined) {
+                window.portNames = data.portnames;
             }
 
             // Handle status response that includes hubs info
@@ -550,13 +582,13 @@
                     <div class="hub-controls">
                         <div class="control-group">
                             <label>Power Limit:</label>
-                            <button class="btn ${hub.power === 'low' ? 'btn-active' : 'btn-low'}" onclick="setHubPower(${hub.num}, false)">Low</button>
-                            <button class="btn ${hub.power === 'high' ? 'btn-active' : 'btn-high'}" onclick="setHubPower(${hub.num}, true)">High</button>
+                            <button class="btn ${hub.power === 'low' ? 'btn-active' : 'btn-inactive'}" onclick="setHubPower(${hub.num}, false)">Low</button>
+                            <button class="btn ${hub.power === 'high' ? 'btn-active' : 'btn-inactive'}" onclick="setHubPower(${hub.num}, true)">High</button>
                         </div>
                         <div class="control-group">
                             <label>Hub LEDs:</label>
-                            <button class="btn ${!hub.led ? 'btn-active' : ''}" onclick="setHubLED(${hub.num}, false)">Off</button>
-                            <button class="btn ${hub.led ? 'btn-active' : ''}" onclick="setHubLED(${hub.num}, true)">On</button>
+                            <button class="btn ${!hub.led ? 'btn-active' : 'btn-inactive'}" onclick="setHubLED(${hub.num}, false)">Off</button>
+                            <button class="btn ${hub.led ? 'btn-active' : 'btn-inactive'}" onclick="setHubLED(${hub.num}, true)">On</button>
                         </div>
                     </div>
                     <div class="ports-row"></div>
@@ -569,8 +601,19 @@
                 hub.ports.forEach(port => {
                     const portCard = document.createElement('div');
                     portCard.className = `port-card ${port.enabled ? 'active' : ''}`;
+
+                    // Get port name from global portNames object (if available)
+                    const portName = window.portNames ? (window.portNames[port.num] || '') : '';
+
                     portCard.innerHTML = `
                         <div class="port-number">Port ${port.num}</div>
+                        <input type="text" class="port-name-input"
+                               placeholder="Name..."
+                               value="${portName}"
+                               maxlength="10"
+                               pattern="[A-Za-z0-9_-]*"
+                               onblur="setPortName(${port.num}, this.value)"
+                               onkeypress="if(event.key==='Enter') this.blur()">
                         <div class="port-status">${port.enabled ? 'ON' : 'OFF'}</div>
                         <div class="port-controls">
                             <button class="btn btn-off" onclick="setPort(${port.num}, 'off')">Off</button>
@@ -609,6 +652,31 @@
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
                 addLog(`Failed to send hub LED command - not connected`, 'error');
+            }
+        }
+
+        function setPortName(port, name) {
+            // Validate name: max 10 chars, alphanumeric/_/- only
+            if (name && name.length > 10) {
+                addLog(`Port name too long (max 10 chars)`, 'error');
+                // Reset input to previous value
+                setTimeout(() => sendCommand({ cmd: 'status' }), 100);
+                return;
+            }
+            if (name && !/^[A-Za-z0-9_-]*$/.test(name)) {
+                addLog(`Invalid port name (only letters, numbers, _ and - allowed)`, 'error');
+                // Reset input to previous value
+                setTimeout(() => sendCommand({ cmd: 'status' }), 100);
+                return;
+            }
+
+            // Send command to set port name
+            if (sendCommand({ cmd: 'portname', port: port, name: name })) {
+                // Update local cache
+                window.portNames[port] = name;
+                // Don't log success - server will send confirmation
+            } else {
+                addLog(`Failed to set port name - not connected`, 'error');
             }
         }
 

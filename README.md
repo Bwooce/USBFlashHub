@@ -12,6 +12,7 @@ Provides simplified static port numbering and direct pin control for the I2C USB
 - **Web Interface**: Real-time WebSocket control via browser
 - **I2C Hub Control**: Manages up to 8 hubs (32 USB ports total)
 - **Power Management**: Per-port power control (Off/Low/High - actual mA values depend on resistor configuration)
+- **Port Naming**: Assign persistent names to ports (max 10 chars, stored in NVS)
 - **LED Control**: Status, activity, and error indication (RGB on S3)
 - **Pin Control**: Direct boot/reset pin control for device programming
 - **Activity Logging**: PSRAM-based circular buffer with up to 10,000 entries
@@ -109,6 +110,13 @@ python3 testing_agent.py --config test_rules.yaml
 {"cmd":"port","port":3,"enable":true}
 {"cmd":"port","port":3,"enable":false}
 ```
+
+**Port Naming:**
+```json
+{"cmd":"portname","port":5,"name":"ESP32-Dev"}
+{"cmd":"portname","port":5,"name":""}
+```
+*Names: max 10 characters, alphanumeric, underscore, and hyphen only. Stored in NVS (persistent across reboots).*
 
 **Pin Control:**
 ```json

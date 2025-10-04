@@ -524,6 +524,12 @@ public:
   uint32_t getLastActivity() { return lastActivity; }
   uint8_t getNumConnected() { return numConnected; }
 
+  // Check if a specific hub is connected
+  bool isHubConnected(uint8_t hubIndex) {
+    if (hubIndex >= MAX_HUBS) return false;
+    return connectedHubs[hubIndex] != 0;
+  }
+
   // Convert absolute port number to hub and port indices
   bool getHubAndPort(uint8_t portNum, uint8_t& hubIndex, uint8_t& portIndex) {
     if (portNum < 1 || portNum > TOTAL_PORTS) return false;
@@ -903,6 +909,110 @@ public:
 };
 
 // ============================================
+// PORT NAME MANAGER CLASS
+// ============================================
+class PortNameManager {
+private:
+  static const uint8_t MAX_NAME_LEN = 10;
+  static const uint8_t MAX_PORTS = MAX_HUBS * PORTS_PER_HUB;  // 32
+  Preferences prefs;
+  char portNames[MAX_PORTS][MAX_NAME_LEN + 1];  // 32 × 11 = 352 bytes
+
+  // Validate name: only ASCII alphanumeric, underscore, hyphen
+  bool isValidName(const char* name) {
+    if (!name) return false;
+    size_t len = strlen(name);
+    if (len == 0 || len > MAX_NAME_LEN) return false;
+
+    for (const char* p = name; *p; p++) {
+      if (!isalnum(*p) && *p != '_' && *p != '-') {
+        return false;  // Reject spaces and special chars
+      }
+    }
+    return true;
+  }
+
+public:
+  PortNameManager() {
+    memset(portNames, 0, sizeof(portNames));
+  }
+
+  void begin() {
+    prefs.begin("portnames", true);  // Read-only for loading
+
+    for (uint8_t i = 0; i < MAX_PORTS; i++) {
+      char key[4];
+      snprintf(key, sizeof(key), "p%d", i + 1);
+      String name = prefs.getString(key, "");
+      if (name.length() > 0) {
+        strlcpy(portNames[i], name.c_str(), MAX_NAME_LEN + 1);
+      }
+    }
+    prefs.end();
+
+    Serial.print(F("Port names loaded: "));
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < MAX_PORTS; i++) {
+      if (portNames[i][0] != '\0') count++;
+    }
+    Serial.print(count);
+    Serial.println(F(" named ports"));
+  }
+
+  const char* getName(uint8_t port) {
+    if (port < 1 || port > MAX_PORTS) return "";
+    return portNames[port - 1];
+  }
+
+  bool setName(uint8_t port, const char* name) {
+    if (port < 1 || port > MAX_PORTS) return false;
+
+    // Empty name is valid (clears the name)
+    if (name && name[0] == '\0') {
+      clearName(port);
+      return true;
+    }
+
+    if (!isValidName(name)) return false;
+
+    // Update RAM cache
+    strlcpy(portNames[port - 1], name, MAX_NAME_LEN + 1);
+
+    // Save to Preferences
+    prefs.begin("portnames", false);  // Read-write
+    char key[4];
+    snprintf(key, sizeof(key), "p%d", port);
+    prefs.putString(key, name);
+    prefs.end();
+
+    return true;
+  }
+
+  void clearName(uint8_t port) {
+    if (port < 1 || port > MAX_PORTS) return;
+
+    portNames[port - 1][0] = '\0';
+
+    prefs.begin("portnames", false);  // Read-write
+    char key[4];
+    snprintf(key, sizeof(key), "p%d", port);
+    prefs.remove(key);
+    prefs.end();
+  }
+
+  void toJson(JsonDocument& doc) {
+    JsonObject names = doc.createNestedObject("portnames");
+    for (uint8_t i = 0; i < MAX_PORTS; i++) {
+      if (portNames[i][0] != '\0') {
+        char key[4];
+        snprintf(key, sizeof(key), "%d", i + 1);
+        names[key] = portNames[i];
+      }
+    }
+  }
+};
+
+// ============================================
 // WIFI MANAGER CLASS
 // ============================================
 class WiFiManager {
@@ -1216,13 +1326,14 @@ private:
   ConfigManager* config;
   ActivityLogger* logger;
   WiFiManager* network;
+  PortNameManager* portNames;
   StaticJsonDocument<1024> response;  // Increased for log output
   uint32_t commandCount;
 
 public:
   CommandProcessor(HubController* h, PinController* p, LEDController* l,
-                   ConfigManager* c, ActivityLogger* log, WiFiManager* n)
-    : hub(h), pins(p), leds(l), config(c), logger(log), network(n), commandCount(0) {}
+                   ConfigManager* c, ActivityLogger* log, WiFiManager* n, PortNameManager* pn)
+    : hub(h), pins(p), leds(l), config(c), logger(log), network(n), portNames(pn), commandCount(0) {}
 
   void processCommand(const String& cmdStr) {
     StaticJsonDocument<256> cmd;
@@ -1285,6 +1396,10 @@ public:
     else if (strcmp(action, "config") == 0) {
       handleConfigCommand(cmd);
     }
+    // Port naming
+    else if (strcmp(action, "portname") == 0) {
+      handlePortNameCommand(cmd);
+    }
     // Activity log
     else if (strcmp(action, "log") == 0) {
       sendLog();
@@ -1321,9 +1436,14 @@ private:
 
       hub->setPort(hubIndex, portIndex, enable);
 
-      // Log with [hub:port] format
-      char detail[16];
-      snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
+      // Log with [hub:port] format and port name if available
+      const char* portName = portNames->getName(portNum);
+      char detail[32];
+      if (portName[0] != '\0') {
+        snprintf(detail, sizeof(detail), "[%d:%d] %s", hubIndex + 1, portIndex + 1, portName);
+      } else {
+        snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
+      }
       logger->log(enable ? "port_on" : "port_off", 0, detail);
 
       response.clear();
@@ -1348,11 +1468,16 @@ private:
     }
 
     if (hub->setPortByNumber(portNum, powerLevel)) {
-      // Log with [hub:port] format (power is hub-level, not shown here)
+      // Log with [hub:port] format and port name if available
       uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
       uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
-      char detail[16];
-      snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
+      const char* portName = portNames->getName(portNum);
+      char detail[32];
+      if (portName[0] != '\0') {
+        snprintf(detail, sizeof(detail), "[%d:%d] %s", hubIndex + 1, portIndex + 1, portName);
+      } else {
+        snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
+      }
       logger->log("port_set", 0, detail);
 
       response.clear();
@@ -1499,6 +1624,42 @@ private:
     }
   }
 
+  void handlePortNameCommand(JsonDocument& cmd) {
+    uint8_t port = cmd["port"] | 0;
+    if (port == 0) {
+      sendError("Missing port number");
+      return;
+    }
+
+    if (!cmd.containsKey("name")) {
+      sendError("Missing name parameter");
+      return;
+    }
+
+    const char* name = cmd["name"];
+
+    // Set the port name (handles validation)
+    if (portNames->setName(port, name)) {
+      response.clear();
+      response["status"] = "ok";
+      response["port"] = port;
+      response["name"] = name;
+      serializeJson(response, Serial);
+      Serial.println();
+
+      // Log the name change
+      char detail[32];
+      if (name && name[0] != '\0') {
+        snprintf(detail, sizeof(detail), "Port %d: %s", port, name);
+      } else {
+        snprintf(detail, sizeof(detail), "Port %d cleared", port);
+      }
+      logger->log("port_named", port, detail);
+    } else {
+      sendError("Invalid name: max 10 chars, alphanumeric/_/- only");
+    }
+  }
+
   void sendLog() {
     response.clear();
     response["status"] = "ok";
@@ -1575,6 +1736,9 @@ public:
       }
     }
 
+    // Add port names
+    portNames->toJson(response);
+
     serializeJson(response, Serial);
     Serial.println();
   }
@@ -1622,6 +1786,10 @@ public:
     Serial.println(F("  {\"cmd\":\"config\",\"wifi\":{\"enable\":false}}"));
     Serial.println(F("  {\"cmd\":\"config\",\"mdns\":\"usbhub\"}"));
     Serial.println(F("  {\"cmd\":\"config\"}  (get current config)"));
+    Serial.println(F("\nPort Naming:"));
+    Serial.println(F("  {\"cmd\":\"portname\",\"port\":5,\"name\":\"ESP32-Dev\"}"));
+    Serial.println(F("  {\"cmd\":\"portname\",\"port\":5,\"name\":\"\"}  (clear name)"));
+    Serial.println(F("  Max 10 chars: letters, numbers, _ or - only"));
     Serial.println(F("\nStatus:"));
     Serial.println(F("  {\"cmd\":\"status\"}"));
     Serial.println(F("  {\"cmd\":\"log\"}  (activity log)"));
@@ -1654,6 +1822,7 @@ PinController pinController(BOOT_PIN, RESET_PIN);
 LEDController ledController(STATUS_LED, ACTIVITY_LED);
 ConfigManager configManager;
 ActivityLogger activityLogger;
+PortNameManager portNameManager;
 
 // Helper function for error logging - can be called from anywhere
 void logError(const char* errorType, uint8_t target = 0, const char* detail = nullptr) {
@@ -1661,7 +1830,7 @@ void logError(const char* errorType, uint8_t target = 0, const char* detail = nu
 }
 WiFiManager wifiManager(&configManager);
 CommandProcessor processor(&hubController, &pinController, &ledController,
-                          &configManager, &activityLogger, &wifiManager);
+                          &configManager, &activityLogger, &wifiManager, &portNameManager);
 
 // Web server and WebSocket
 WebServer webServer(80);
@@ -1874,6 +2043,9 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
               else if (state == POWER_HIGH) ports[String(i)] = "high";
             }
           }
+
+          // Add port names
+          portNameManager.toJson(status);
 
           String msg;
           serializeJson(status, msg);
@@ -2103,25 +2275,41 @@ void broadcastStatus() {
 
 void logSystemStats() {
   // Build stats string with all metrics using stack buffer (no heap allocation)
-  char stats[128];
+  char stats[160];
   int offset = 0;
 
   // Uptime in hours
   uint32_t uptimeHours = millis() / 3600000;
   offset += snprintf(stats + offset, sizeof(stats) - offset, "up:%luh", (unsigned long)uptimeHours);
 
-  // Heap usage (current/min)
+  // Heap usage (free/min/total)
   uint32_t freeHeap = ESP.getFreeHeap();
   uint32_t minFreeHeap = ESP.getMinFreeHeap();
-  offset += snprintf(stats + offset, sizeof(stats) - offset, " heap:%lu/%luKB",
-                    (unsigned long)(freeHeap / 1024), (unsigned long)(minFreeHeap / 1024));
+  uint32_t totalHeap = ESP.getHeapSize();
+  if (totalHeap >= 1048576) {
+    offset += snprintf(stats + offset, sizeof(stats) - offset, " heap:%lu/%lu/%luMB",
+                      (unsigned long)(freeHeap / 1024), (unsigned long)(minFreeHeap / 1024),
+                      (unsigned long)(totalHeap / 1048576));
+  } else {
+    offset += snprintf(stats + offset, sizeof(stats) - offset, " heap:%lu/%lu/%luKB",
+                      (unsigned long)(freeHeap / 1024), (unsigned long)(minFreeHeap / 1024),
+                      (unsigned long)(totalHeap / 1024));
+  }
 
-  // PSRAM usage if available (current/min)
+  // PSRAM usage if available (free/min/total)
   if (ESP.getPsramSize() > 0) {
     uint32_t freePsram = ESP.getFreePsram();
     uint32_t minFreePsram = ESP.getMinFreePsram();
-    offset += snprintf(stats + offset, sizeof(stats) - offset, " psram:%lu/%luKB",
-                      (unsigned long)(freePsram / 1024), (unsigned long)(minFreePsram / 1024));
+    uint32_t totalPsram = ESP.getPsramSize();
+    if (totalPsram >= 1048576) {
+      offset += snprintf(stats + offset, sizeof(stats) - offset, " psram:%lu/%lu/%luMB",
+                        (unsigned long)(freePsram / 1024), (unsigned long)(minFreePsram / 1024),
+                        (unsigned long)(totalPsram / 1048576));
+    } else {
+      offset += snprintf(stats + offset, sizeof(stats) - offset, " psram:%lu/%lu/%luKB",
+                        (unsigned long)(freePsram / 1024), (unsigned long)(minFreePsram / 1024),
+                        (unsigned long)(totalPsram / 1024));
+    }
   }
 
   // Temperature if available (ESP32-S3)
@@ -2136,10 +2324,53 @@ void logSystemStats() {
     offset += snprintf(stats + offset, sizeof(stats) - offset, " rssi:%ddBm", rssi);
   }
 
-  // I2C health
-  snprintf(stats + offset, sizeof(stats) - offset, " i2c:%.2f%%", i2cHealth.errorRate);
+  // I2C health (error rate)
+  snprintf(stats + offset, sizeof(stats) - offset, " i2c_err:%.2f%%", i2cHealth.errorRate);
 
   activityLogger.log("system_stats", 0, stats);
+}
+
+void logHubPortStatus() {
+  // Build hub/port status string: "1xxhx2hhhh3llll..."
+  // Format: hub_number followed by 4 port states (x=off, h=high, l=low)
+  // Only log active hubs, enumerated from 1 regardless of I2C address
+  char portStatus[128];
+  int offset = 0;
+  uint8_t activeHubNum = 1;  // Enumerate active hubs starting from 1
+
+  for (uint8_t hubIndex = 0; hubIndex < MAX_HUBS && offset < sizeof(portStatus) - 10; hubIndex++) {
+    if (hubController.isHubConnected(hubIndex)) {
+      // Add hub number
+      offset += snprintf(portStatus + offset, sizeof(portStatus) - offset, "%d", activeHubNum);
+
+      // Add 4 port states for this hub
+      for (uint8_t portIndex = 0; portIndex < PORTS_PER_HUB; portIndex++) {
+        uint8_t portNum = hubIndex * PORTS_PER_HUB + portIndex + 1;
+        uint8_t powerLevel = hubController.getPortPower(portNum);
+
+        char portChar;
+        if (powerLevel == POWER_OFF) {
+          portChar = 'x';
+        } else if (powerLevel == POWER_LOW) {
+          portChar = 'l';
+        } else {  // POWER_HIGH
+          portChar = 'h';
+        }
+
+        if (offset < sizeof(portStatus) - 1) {
+          portStatus[offset++] = portChar;
+        }
+      }
+
+      activeHubNum++;
+    }
+  }
+
+  portStatus[offset] = '\0';  // Null terminate
+
+  if (offset > 0) {
+    activityLogger.log("hub_ports", 0, portStatus);
+  }
 }
 
 void setup() {
@@ -2257,6 +2488,7 @@ void setup() {
   // Initialize configuration first
   configManager.begin();
   activityLogger.begin();
+  portNameManager.begin();
 
   // Log the restart
   activityLogger.log("system_restart", 0, restartReason.c_str());
@@ -2418,6 +2650,7 @@ void loop() {
   static uint32_t lastStatsLog = 0;
   if (millis() - lastStatsLog > STATS_LOG_INTERVAL) {
     logSystemStats();
+    logHubPortStatus();
     lastStatsLog = millis();
   }
 }

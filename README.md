@@ -171,18 +171,6 @@ The hub supports three power levels: **off**, **low**, and **high**.
 - **Hardware configurable** - resistor values can be changed to adjust current limits
 - For resistor selection and schematic details, see [Jim Heaney's hardware repository](https://github.com/JimHeaney/i2c-usb-hub)
 
-## Port Numbering
-
-Ports are numbered sequentially across hubs:
-- Hub 1 (0x18): Ports 1-4
-- Hub 2 (0x19): Ports 5-8
-- Hub 3 (0x1A): Ports 9-12
-- Hub 4 (0x1B): Ports 13-16
-- Hub 5 (0x1C): Ports 17-20
-- Hub 6 (0x1D): Ports 21-24
-- Hub 7 (0x1E): Ports 25-28
-- Hub 8 (0x1F): Ports 29-32
-
 ## Pin Assignments
 
 Varies by board - see [CLAUDE.md](CLAUDE.md) for complete pin mappings.

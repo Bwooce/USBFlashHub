@@ -684,12 +684,14 @@ private:
     char wifiSSID[32];
     char wifiPass[64];
     char mdnsName[32];
+    char systemName[16];  // System/UI name, max 15 chars
     bool wifiEnabled;
   } config;
 
 public:
   ConfigManager() {
     strcpy(config.mdnsName, "usbhub");  // Default
+    strcpy(config.systemName, "USBFlashHub");  // Default UI name
     config.wifiEnabled = false;
   }
 
@@ -702,10 +704,14 @@ public:
     prefs.getString("ssid", config.wifiSSID, sizeof(config.wifiSSID));
     prefs.getString("pass", config.wifiPass, sizeof(config.wifiPass));
     prefs.getString("mdns", config.mdnsName, sizeof(config.mdnsName));
+    prefs.getString("sysname", config.systemName, sizeof(config.systemName));
     config.wifiEnabled = prefs.getBool("wifi_en", false);
 
     if (strlen(config.mdnsName) == 0) {
       strcpy(config.mdnsName, "usbhub");
+    }
+    if (strlen(config.systemName) == 0) {
+      strcpy(config.systemName, "USBFlashHub");
     }
   }
 
@@ -713,6 +719,7 @@ public:
     prefs.putString("ssid", config.wifiSSID);
     prefs.putString("pass", config.wifiPass);
     prefs.putString("mdns", config.mdnsName);
+    prefs.putString("sysname", config.systemName);
     prefs.putBool("wifi_en", config.wifiEnabled);
   }
 
@@ -728,15 +735,30 @@ public:
     saveConfig();
   }
 
+  bool setSystemName(const char* name) {
+    // Validate: max 15 chars, alphanumeric/_/- only, no spaces
+    if (!name || strlen(name) == 0 || strlen(name) > 15) return false;
+    for (const char* p = name; *p; p++) {
+      if (!isalnum(*p) && *p != '_' && *p != '-') {
+        return false;
+      }
+    }
+    strlcpy(config.systemName, name, sizeof(config.systemName));
+    saveConfig();
+    return true;
+  }
+
   const char* getSSID() { return config.wifiSSID; }
   const char* getPass() { return config.wifiPass; }
   const char* getMDNS() { return config.mdnsName; }
+  const char* getSystemName() { return config.systemName; }
   bool isWiFiEnabled() { return config.wifiEnabled; }
 
   void getConfig(JsonDocument& doc) {
     doc["wifi"]["ssid"] = config.wifiSSID;
     doc["wifi"]["enabled"] = config.wifiEnabled;
     doc["mdns"] = config.mdnsName;
+    doc["systemname"] = config.systemName;
   }
 };
 
@@ -1112,6 +1134,19 @@ public:
 
   bool isConnected() { return connected; }
   String getIP() { return WiFi.localIP().toString(); }
+
+  void updateMDNS(const char* name) {
+    if (!connected) return;
+
+    // End current mDNS and restart with new name
+    MDNS.end();
+    if (MDNS.begin(name)) {
+      Serial.print(F("mDNS updated: "));
+      Serial.print(name);
+      Serial.println(F(".local"));
+      MDNS.addService("http", "tcp", 80);
+    }
+  }
 };
 
 // ============================================
@@ -1400,6 +1435,10 @@ public:
     else if (strcmp(action, "portname") == 0) {
       handlePortNameCommand(cmd);
     }
+    // System name
+    else if (strcmp(action, "systemname") == 0) {
+      handleSystemNameCommand(cmd);
+    }
     // Activity log
     else if (strcmp(action, "log") == 0) {
       sendLog();
@@ -1657,6 +1696,34 @@ private:
       logger->log("port_named", port, detail);
     } else {
       sendError("Invalid name: max 10 chars, alphanumeric/_/- only");
+    }
+  }
+
+  void handleSystemNameCommand(JsonDocument& cmd) {
+    if (!cmd.containsKey("name")) {
+      sendError("Missing name parameter");
+      return;
+    }
+
+    const char* name = cmd["name"];
+
+    // Set the system name (handles validation and updates mDNS)
+    if (config->setSystemName(name)) {
+      // Update mDNS hostname to match system name
+      network->updateMDNS(name);
+
+      response.clear();
+      response["status"] = "ok";
+      response["systemname"] = name;
+      serializeJson(response, Serial);
+      Serial.println();
+
+      // Log the name change
+      char detail[32];
+      snprintf(detail, sizeof(detail), "System: %s", name);
+      logger->log("system_named", 0, detail);
+    } else {
+      sendError("Invalid name: max 15 chars, alphanumeric/_/- only");
     }
   }
 

@@ -154,6 +154,12 @@ python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws
 ```
 **Constraints:** Max 10 characters, alphanumeric/_/- only, no spaces. Names are stored persistently in NVS (Non-Volatile Storage) and included in activity logs and status responses.
 
+### System Name
+```json
+{"cmd":"systemname","name":"MyHub"}             // Set system name (max 15 chars)
+```
+**Constraints:** Max 15 characters, alphanumeric/_/- only, no spaces. Used for web UI title and automatically updates mDNS hostname. Stored persistently in NVS. Editable directly in web UI by clicking the title.
+
 ### Hub Control
 ```json
 {"cmd":"hub","hub":1,"state":255}          // Set raw hub state

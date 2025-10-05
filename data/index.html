@@ -36,6 +36,36 @@
             color: #333;
             font-size: 28px;
             margin-bottom: 10px;
+            display: inline-block;
+            cursor: text;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        h1:hover {
+            background: #f5f5f5;
+        }
+
+        h1:focus {
+            outline: 2px solid #4CAF50;
+            background: #f0f9ff;
+        }
+
+        #systemName {
+            cursor: text;
+            padding: 2px 6px;
+            border-radius: 3px;
+            transition: background 0.2s;
+        }
+
+        #systemName:hover {
+            background: #f5f5f5;
+        }
+
+        #systemName:focus {
+            outline: 2px solid #4CAF50;
+            background: #f0f9ff;
         }
 
         .status-bar {
@@ -357,7 +387,7 @@
 <body>
     <div class="container">
         <header>
-            <h1>🔌 USBFlashHub Control Panel</h1>
+            <h1>🔌 <span id="systemName" contenteditable="true" spellcheck="false" onblur="saveSystemName(this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}" data-original="USBFlashHub">USBFlashHub</span> Control Panel</h1>
             <div class="status-bar">
                 <div class="status-item">
                     <div class="status-dot" id="wsStatus"></div>
@@ -526,6 +556,14 @@
             // Handle port names from status response
             if (data.portnames !== undefined) {
                 window.portNames = data.portnames;
+            }
+
+            // Handle system name from status response
+            if (data.systemname !== undefined) {
+                const nameElement = document.getElementById('systemName');
+                nameElement.textContent = data.systemname;
+                nameElement.dataset.original = data.systemname;
+                document.title = data.systemname + ' Control Panel';
             }
 
             // Handle status response that includes hubs info
@@ -697,6 +735,38 @@
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
                 addLog(`Failed to set port name - not connected`, 'error');
+            }
+        }
+
+        function saveSystemName(element) {
+            const newName = element.textContent.trim();
+            const originalName = element.dataset.original;
+
+            // Only save if value changed
+            if (newName === originalName) {
+                return;
+            }
+
+            // Validate: max 15 chars, alphanumeric/_/- only, no spaces
+            if (newName.length === 0 || newName.length > 15) {
+                addLog(`System name must be 1-15 characters`, 'error');
+                element.textContent = originalName;
+                return;
+            }
+            if (!/^[A-Za-z0-9_-]+$/.test(newName)) {
+                addLog(`Invalid system name (only letters, numbers, _ and - allowed, no spaces)`, 'error');
+                element.textContent = originalName;
+                return;
+            }
+
+            // Send command to set system name
+            if (sendCommand({ cmd: 'systemname', name: newName })) {
+                element.dataset.original = newName;
+                document.title = newName + ' Control Panel';
+                addLog(`System name updated: ${newName}`, 'success');
+            } else {
+                addLog(`Failed to set system name - not connected`, 'error');
+                element.textContent = originalName;
             }
         }
 

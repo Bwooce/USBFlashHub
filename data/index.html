@@ -426,6 +426,12 @@
                         <button class="btn-control" onclick="setPinState('reset', false)">Release</button>
                         <button class="btn-control" onclick="pulseReset()">Pulse</button>
                     </div>
+                    <div class="control-group">
+                        <label>External 5V Relay:</label>
+                        <span id="relayState" class="pin-state low">OFF</span>
+                        <button class="btn-control" onclick="setRelayState(true)">ON</button>
+                        <button class="btn-control" onclick="setRelayState(false)">OFF</button>
+                    </div>
                 </div>
 
                 <div class="control-section">
@@ -496,9 +502,124 @@
     <script>
         let ws;
         let reconnectTimer;
+        let pingTimer;
+        let pongTimeout;
+        let lastPongTime = 0;
         let bootPinState = false;
         let resetPinState = true;
+        let versionCheckTimer;
+        let currentVersion = null;
         window.portNames = {};
+
+        function stopKeepalive() {
+            if (pingTimer) {
+                clearInterval(pingTimer);
+                pingTimer = null;
+            }
+            if (pongTimeout) {
+                clearTimeout(pongTimeout);
+                pongTimeout = null;
+            }
+        }
+
+        function startKeepalive() {
+            stopKeepalive();
+            lastPongTime = Date.now();
+
+            // Send ping every 5 seconds
+            pingTimer = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({cmd: 'ping'}));
+
+                    // Set timeout to detect no pong response
+                    pongTimeout = setTimeout(() => {
+                        const timeSincePong = Date.now() - lastPongTime;
+                        if (timeSincePong > 10000) {
+                            console.error('WebSocket keepalive timeout - no pong received');
+                            addLog('Connection timeout - no response from device', 'error');
+                            ws.close();
+                        }
+                    }, 10000);
+                }
+            }, 5000);
+        }
+
+        function checkVersion() {
+            fetch('/version')
+                .then(response => response.json())
+                .then(data => {
+                    const newVersion = data.size;
+
+                    if (currentVersion === null) {
+                        // First check - just store version
+                        currentVersion = newVersion;
+                        console.log('UI version initialized:', currentVersion, 'bytes');
+                    } else if (currentVersion !== newVersion) {
+                        // Version changed - prompt for reload
+                        console.warn('UI version changed:', currentVersion, '->', newVersion);
+                        showReloadBanner();
+                        currentVersion = newVersion;
+                    }
+                })
+                .catch(err => {
+                    console.error('Version check failed:', err);
+                });
+        }
+
+        function showReloadBanner() {
+            // Check if banner already exists
+            if (document.getElementById('reloadBanner')) return;
+
+            const banner = document.createElement('div');
+            banner.id = 'reloadBanner';
+            banner.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; background: #FF9800; color: white; padding: 12px 20px; text-align: center; z-index: 10000; box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-weight: 500;';
+            banner.innerHTML = '⚠ UI has been updated. <button onclick="location.reload()" style="margin-left: 15px; padding: 6px 20px; background: white; color: #FF9800; border: none; border-radius: 4px; font-weight: bold; cursor: pointer;">Reload Now</button>';
+            document.body.insertBefore(banner, document.body.firstChild);
+        }
+
+        function startVersionCheck() {
+            if (versionCheckTimer) {
+                clearInterval(versionCheckTimer);
+            }
+
+            // Check immediately on start
+            checkVersion();
+
+            // Then check every 60 seconds
+            versionCheckTimer = setInterval(checkVersion, 60000);
+        }
+
+        function stopVersionCheck() {
+            if (versionCheckTimer) {
+                clearInterval(versionCheckTimer);
+                versionCheckTimer = null;
+            }
+        }
+
+        function clearStaleData() {
+            // Clear hub display
+            const hubsContainer = document.getElementById('hubsContainer');
+            hubsContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #f44336; background: #ffebee; border-radius: 4px; border: 2px solid #f44336;"><strong>⚠ Disconnected</strong><br/>Waiting for connection...</div>';
+
+            // Clear system stats
+            document.getElementById('ipAddress').textContent = 'IP: -';
+            document.getElementById('uptime').textContent = 'Uptime: -';
+            document.getElementById('freeHeap').textContent = '-';
+            document.getElementById('minFreeHeap').textContent = '-';
+            document.getElementById('freePsram').textContent = '-';
+            document.getElementById('minFreePsram').textContent = '-';
+            document.getElementById('cpuFreq').textContent = '-';
+            document.getElementById('wifiSsid').textContent = '-';
+            document.getElementById('wifiRssi').textContent = '-';
+            document.getElementById('temperature').textContent = '-';
+            document.getElementById('sdkVersion').textContent = '-';
+            document.getElementById('i2cTotal').textContent = '0';
+            document.getElementById('i2cFailed').textContent = '0';
+            document.getElementById('i2cErrorRate').textContent = '0%';
+            document.getElementById('i2cLastSuccess').textContent = '-';
+
+            addLog('Connection lost - data cleared', 'error');
+        }
 
         function initWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -512,12 +633,15 @@
                 document.getElementById('wsStatus').classList.add('connected');
                 document.getElementById('connectionStatus').textContent = 'Connected';
                 clearTimeout(reconnectTimer);
+                startKeepalive();
                 refreshStatus();
             };
 
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    // Update last pong time on any message (connection is alive)
+                    lastPongTime = Date.now();
                     handleMessage(data);
                 } catch (e) {
                     console.error('Failed to parse message:', e);
@@ -527,11 +651,15 @@
             ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
                 addLog(`WebSocket error: Cannot connect to ws://${wsHost}:81`, 'error');
+                stopKeepalive();
+                clearStaleData();
             };
 
             ws.onclose = () => {
                 document.getElementById('wsStatus').classList.remove('connected');
                 document.getElementById('connectionStatus').textContent = 'Disconnected';
+                stopKeepalive();
+                clearStaleData();
                 reconnectTimer = setTimeout(initWebSocket, 3000);
             };
         }
@@ -583,6 +711,9 @@
             if (data.pins) {
                 updatePinStates(data.pins);
             }
+            if (data.relay) {
+                updateRelayState(data.relay);
+            }
             if (data.network) {
                 if (data.network.ip) {
                     document.getElementById('ipAddress').textContent = `IP: ${data.network.ip}`;
@@ -596,7 +727,7 @@
             if (data.status === 'error') {
                 addLog(`Error: ${data.msg} ${data.detail || ''}`, 'error');
             }
-            if (data.status === 'ok' && data.msg) {
+            if (data.status === 'ok' && data.msg && data.msg !== 'pong') {
                 addLog(data.msg, 'success');
             }
         }
@@ -791,6 +922,16 @@
             sendCommand({ cmd: 'reset', pulse: 100 });
         }
 
+        function setRelayState(state) {
+            if (sendCommand({ cmd: 'relay', state: state })) {
+                // Update UI immediately
+                document.getElementById('relayState').className = `pin-state ${state ? 'high' : 'low'}`;
+                document.getElementById('relayState').textContent = state ? 'ON' : 'OFF';
+            } else {
+                addLog('Failed to send relay command - not connected', 'error');
+            }
+        }
+
         function allOff() {
             if (confirm('Turn off all ports?')) {
                 if (sendCommand({ cmd: 'alloff' })) {
@@ -913,6 +1054,13 @@
             }
         }
 
+        function updateRelayState(relay) {
+            if (relay.state !== undefined) {
+                document.getElementById('relayState').className = `pin-state ${relay.state ? 'high' : 'low'}`;
+                document.getElementById('relayState').textContent = relay.state ? 'ON' : 'OFF';
+            }
+        }
+
         function updateLog(logData) {
             const logDiv = document.getElementById('activityLog');
             if (Array.isArray(logData)) {
@@ -977,6 +1125,7 @@
         // Initialize on page load
         window.addEventListener('load', () => {
             initWebSocket();
+            startVersionCheck();
         });
     </script>
 </body>

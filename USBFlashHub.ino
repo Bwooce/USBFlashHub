@@ -91,10 +91,10 @@
 #include <ESPmDNS.h>
 
 // USB configuration for ESP32-S2/S3 with native USB
+// Note: Custom USB descriptors (manufacturer/product name) are not supported
+// with CDCOnBoot=cdc mode. Device will show as "Espressif / USB JTAG/serial debug unit"
 #if defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
-  #if ARDUINO_USB_MODE
-    #include <USB.h>
-  #endif
+  #include <USB.h>
 #endif
 #include <Preferences.h>
 #include <time.h>
@@ -118,6 +118,7 @@
 #define USB_PRODUCT_NAME      "Hub Controller"
 #define USB_SERIAL_PREFIX     "HUBCTL_"  // Will append MAC address for uniqueness
 
+
 // ============================================
 // Board Detection and Pin Assignments
 // ============================================
@@ -138,6 +139,8 @@
   #define ACTIVITY_LED 13
   // Emergency stop (optional)
   #define EMERGENCY_BTN 0  // Built-in button on GPIO0
+  // External 5V relay control (High Level Trigger SSR)
+  #define RELAY_PIN 5
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
   #define BOARD_TYPE "ESP32-C3"
@@ -154,6 +157,8 @@
   #define ACTIVITY_LED 10
   // Emergency stop (optional)
   #define EMERGENCY_BTN 9  // Boot button on C3 Zero
+  // External 5V relay control (High Level Trigger SSR)
+  #define RELAY_PIN 2
 
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
   #define BOARD_TYPE "ESP32-S3"
@@ -175,6 +180,8 @@
   #define ACTIVITY_LED 255
   // Emergency stop (optional)
   #define EMERGENCY_BTN 0  // Built-in button on GPIO0
+  // External 5V relay control (High Level Trigger SSR)
+  #define RELAY_PIN 5
 
 #elif defined(CONFIG_IDF_TARGET_ESP32)
   #define BOARD_TYPE "ESP32"
@@ -191,6 +198,8 @@
   #define ACTIVITY_LED 4
   // Emergency stop (optional)
   #define EMERGENCY_BTN 0  // Built-in button on GPIO0
+  // External 5V relay control (High Level Trigger SSR)
+  #define RELAY_PIN 5
 
 #else
   #error "Unsupported ESP32 variant. Please use ESP32, ESP32-S2, ESP32-S3, or ESP32-C3"
@@ -318,11 +327,20 @@ private:
   uint8_t numConnected;
   uint32_t lastActivity;
 
+  // Sequential port mapping: maps logical port number (1-32) to (hubIndex, portIndex)
+  struct PortMap {
+    uint8_t hubIndex;
+    uint8_t portIndex;
+  };
+  PortMap portMapping[TOTAL_PORTS];
+  uint8_t totalAvailablePorts;  // Actual number of ports available
+
 public:
-  HubController(TwoWire* i2c) : wire(i2c), lastActivity(0), numConnected(0) {
+  HubController(TwoWire* i2c) : wire(i2c), lastActivity(0), numConnected(0), totalAvailablePorts(0) {
     memset(hubStates, 0x00, sizeof(hubStates));  // Start with high power (bit 0 clear)
     memset(portPowerStates, POWER_OFF, sizeof(portPowerStates));
     memset(connectedHubs, 0, sizeof(connectedHubs));
+    memset(portMapping, 0xFF, sizeof(portMapping));  // Initialize to invalid
   }
 
   bool begin() {
@@ -394,6 +412,34 @@ public:
     Serial.print(MAX_HUBS);
     Serial.println(F(" configured hubs"));
 
+    // Build sequential port mapping based on discovered hubs
+    totalAvailablePorts = 0;
+    for (uint8_t hubIndex = 0; hubIndex < MAX_HUBS; hubIndex++) {
+      if (connectedHubs[hubIndex]) {
+        for (uint8_t portIndex = 0; portIndex < PORTS_PER_HUB; portIndex++) {
+          portMapping[totalAvailablePorts].hubIndex = hubIndex;
+          portMapping[totalAvailablePorts].portIndex = portIndex;
+          totalAvailablePorts++;
+        }
+      }
+    }
+
+    Serial.println(F("----------------------------------------"));
+    Serial.print(F("Sequential port mapping ("));
+    Serial.print(totalAvailablePorts);
+    Serial.println(F(" ports total):"));
+    for (uint8_t logicalPort = 0; logicalPort < totalAvailablePorts; logicalPort++) {
+      Serial.print(F("  Port "));
+      Serial.print(logicalPort + 1);
+      Serial.print(F(" -> Hub "));
+      Serial.print(portMapping[logicalPort].hubIndex + 1);
+      Serial.print(F(" (0x"));
+      Serial.print(HUB_ADDRESSES[portMapping[logicalPort].hubIndex], HEX);
+      Serial.print(F("), Port "));
+      Serial.println(portMapping[logicalPort].portIndex + 1);
+    }
+    Serial.println(F("========================================"));
+
     return numConnected > 0;
   }
 
@@ -445,17 +491,24 @@ public:
     updateHub(hubIndex);
   }
 
-  // Set port by absolute port number (1-32)
+  // Set port by absolute port number (1-N where N = number of discovered ports)
   bool setPortByNumber(uint8_t portNum, uint8_t powerLevel) {
-    if (portNum < 1 || portNum > TOTAL_PORTS) return false;
+    if (portNum < 1 || portNum > totalAvailablePorts) {
+      Serial.print(F("Port "));
+      Serial.print(portNum);
+      Serial.print(F(" out of range (1-"));
+      Serial.print(totalAvailablePorts);
+      Serial.println(F(")"));
+      return false;
+    }
 
-    // Calculate hub and port from absolute port number
-    uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
-    uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
+    // Use sequential port mapping
+    uint8_t hubIndex = portMapping[portNum - 1].hubIndex;
+    uint8_t portIndex = portMapping[portNum - 1].portIndex;
 
     if (!connectedHubs[hubIndex]) {
-      Serial.print(F("Hub "));
-      Serial.print(hubIndex + 1);
+      Serial.print(F("Hub for port "));
+      Serial.print(portNum);
       Serial.println(F(" not connected"));
       return false;
     }
@@ -508,9 +561,9 @@ public:
     return hubStates[hubNum - 1];
   }
 
-  // Get port power level by absolute port number
+  // Get port power level by absolute port number (sequential)
   uint8_t getPortPower(uint8_t portNum) {
-    if (portNum < 1 || portNum > TOTAL_PORTS) return 0;
+    if (portNum < 1 || portNum > totalAvailablePorts) return 0;
     return portPowerStates[portNum - 1];
   }
 
@@ -523,6 +576,7 @@ public:
 
   uint32_t getLastActivity() { return lastActivity; }
   uint8_t getNumConnected() { return numConnected; }
+  uint8_t getTotalPorts() { return totalAvailablePorts; }
 
   // Check if a specific hub is connected
   bool isHubConnected(uint8_t hubIndex) {
@@ -530,11 +584,11 @@ public:
     return connectedHubs[hubIndex] != 0;
   }
 
-  // Convert absolute port number to hub and port indices
+  // Convert absolute port number to hub and port indices (using sequential mapping)
   bool getHubAndPort(uint8_t portNum, uint8_t& hubIndex, uint8_t& portIndex) {
-    if (portNum < 1 || portNum > TOTAL_PORTS) return false;
-    hubIndex = (portNum - 1) / PORTS_PER_HUB;
-    portIndex = (portNum - 1) % PORTS_PER_HUB;
+    if (portNum < 1 || portNum > totalAvailablePorts) return false;
+    hubIndex = portMapping[portNum - 1].hubIndex;
+    portIndex = portMapping[portNum - 1].portIndex;
     return connectedHubs[hubIndex];
   }
 
@@ -551,29 +605,36 @@ public:
     return !(hubStates[hubIndex] & 0x01);
   }
 
-  // Get status of all ports
+  // Get status of all ports (using sequential port mapping)
   void getStatus(JsonDocument& status) {
     JsonArray hubs = status.createNestedArray("hubs");
 
-    for (uint8_t i = 0; i < MAX_HUBS; i++) {
-      if (connectedHubs[i]) {
+    // Track which ports belong to which hub for building nested structure
+    // Enumerate hubs sequentially starting from 1
+    uint8_t sequentialHubNum = 1;
+    for (uint8_t hubIdx = 0; hubIdx < MAX_HUBS; hubIdx++) {
+      if (connectedHubs[hubIdx]) {
         JsonObject hub = hubs.createNestedObject();
-        hub["num"] = i + 1;
-        hub["addr"] = HUB_ADDRESSES[i];
-        hub["state"] = hubStates[i];
+        hub["num"] = sequentialHubNum;  // Sequential hub number (not physical index)
+        hub["addr"] = HUB_ADDRESSES[hubIdx];
+        hub["state"] = hubStates[hubIdx];
 
         // Add hub-level LED and power status
-        hub["led"] = getHubLEDState(i);
-        hub["power"] = getHubPowerHigh(i) ? "high" : "low";
+        hub["led"] = getHubLEDState(hubIdx);
+        hub["power"] = getHubPowerHigh(hubIdx) ? "high" : "low";
 
+        // Find all sequential ports that map to this hub
         JsonArray ports = hub.createNestedArray("ports");
-        for (uint8_t p = 0; p < PORTS_PER_HUB; p++) {
-          JsonObject port = ports.createNestedObject();
-          uint8_t portNum = i * PORTS_PER_HUB + p + 1;
-          port["num"] = portNum;
-          port["enabled"] = isPortEnabled(i, p);
-          port["power"] = getPowerString(getPortPower(portNum));
+        for (uint8_t logicalPort = 1; logicalPort <= totalAvailablePorts; logicalPort++) {
+          if (portMapping[logicalPort - 1].hubIndex == hubIdx) {
+            JsonObject port = ports.createNestedObject();
+            port["num"] = logicalPort;  // Sequential port number
+            uint8_t physPortIdx = portMapping[logicalPort - 1].portIndex;
+            port["enabled"] = isPortEnabled(hubIdx, physPortIdx);
+            port["power"] = getPowerString(getPortPower(logicalPort));
+          }
         }
+        sequentialHubNum++;  // Increment for next hub
       }
     }
   }
@@ -1347,6 +1408,53 @@ public:
 };
 
 // ============================================
+// RELAY CONTROLLER CLASS
+// ============================================
+class RelayController {
+private:
+  uint8_t relayPin;
+  bool relayState;
+  bool defaultState;  // State on boot (configurable)
+  Preferences prefs;
+
+public:
+  RelayController(uint8_t pin) : relayPin(pin), relayState(false), defaultState(false) {}
+
+  void begin() {
+    pinMode(relayPin, OUTPUT);
+
+    // Load config from NVS
+    prefs.begin("relay", true);  // Read-only first
+    defaultState = prefs.getBool("default_on", true);  // Default to ON
+    prefs.end();
+
+    // Set to default state
+    setState(defaultState);
+
+    Serial.print(F("Relay controller initialized on GPIO"));
+    Serial.print(relayPin);
+    Serial.print(F(", default: "));
+    Serial.println(defaultState ? "ON" : "OFF");
+  }
+
+  void setState(bool on) {
+    digitalWrite(relayPin, on ? HIGH : LOW);  // High Level Trigger
+    relayState = on;
+  }
+
+  bool getState() { return relayState; }
+
+  void setDefaultState(bool on) {
+    defaultState = on;
+    prefs.begin("relay", false);  // Read-write
+    prefs.putBool("default_on", on);
+    prefs.end();
+  }
+
+  bool getDefaultState() { return defaultState; }
+};
+
+// ============================================
 // COMMAND PROCESSOR
 // ============================================
 // External declarations for global variables
@@ -1362,13 +1470,14 @@ private:
   ActivityLogger* logger;
   WiFiManager* network;
   PortNameManager* portNames;
+  RelayController* relay;
   StaticJsonDocument<1024> response;  // Increased for log output
   uint32_t commandCount;
 
 public:
   CommandProcessor(HubController* h, PinController* p, LEDController* l,
-                   ConfigManager* c, ActivityLogger* log, WiFiManager* n, PortNameManager* pn)
-    : hub(h), pins(p), leds(l), config(c), logger(log), network(n), portNames(pn), commandCount(0) {}
+                   ConfigManager* c, ActivityLogger* log, WiFiManager* n, PortNameManager* pn, RelayController* r)
+    : hub(h), pins(p), leds(l), config(c), logger(log), network(n), portNames(pn), relay(r), commandCount(0) {}
 
   void processCommand(const String& cmdStr) {
     StaticJsonDocument<256> cmd;
@@ -1397,11 +1506,12 @@ public:
     }
     else if (strcmp(action, "alloff") == 0) {
       hub->allOff();
+      relay->setState(false);  // Turn off external 5V relay
       pins->setReset(true);
       delay(100);
       pins->setReset(false);
       logger->log("emergency_stop");
-      sendOK("Emergency stop - all ports off");
+      sendOK("Emergency stop - all ports and relay off");
     }
     // Pin control commands
     else if (strcmp(action, "boot") == 0) {
@@ -1439,6 +1549,10 @@ public:
     else if (strcmp(action, "systemname") == 0) {
       handleSystemNameCommand(cmd);
     }
+    // Relay control
+    else if (strcmp(action, "relay") == 0) {
+      handleRelayCommand(cmd);
+    }
     // Activity log
     else if (strcmp(action, "log") == 0) {
       sendLog();
@@ -1470,8 +1584,13 @@ private:
     // Check for enable parameter (new simple method)
     if (cmd.containsKey("enable")) {
       bool enable = cmd["enable"];
-      uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
-      uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
+
+      // Use sequential port mapping to get actual hub/port indices
+      uint8_t hubIndex, portIndex;
+      if (!hub->getHubAndPort(portNum, hubIndex, portIndex)) {
+        sendError("Invalid port number");
+        return;
+      }
 
       hub->setPort(hubIndex, portIndex, enable);
 
@@ -1491,42 +1610,42 @@ private:
       response["enabled"] = enable;
       serializeJson(response, Serial);
       Serial.println();
-      return;
-    }
-
-    // Legacy: Check for power level (for backwards compatibility)
-    const char* powerStr = cmd["power"] | "default";
-    uint8_t powerLevel = POWER_DEFAULT;
-
-    if (strcmp(powerStr, "off") == 0) {
-      powerLevel = POWER_OFF;
-    } else if (strcmp(powerStr, "low") == 0) {
-      powerLevel = POWER_LOW;
-    } else if (strcmp(powerStr, "high") == 0) {
-      powerLevel = POWER_HIGH;
-    }
-
-    if (hub->setPortByNumber(portNum, powerLevel)) {
-      // Log with [hub:port] format and port name if available
-      uint8_t hubIndex = (portNum - 1) / PORTS_PER_HUB;
-      uint8_t portIndex = (portNum - 1) % PORTS_PER_HUB;
-      const char* portName = portNames->getName(portNum);
-      char detail[32];
-      if (portName[0] != '\0') {
-        snprintf(detail, sizeof(detail), "[%d:%d] %s", hubIndex + 1, portIndex + 1, portName);
-      } else {
-        snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
-      }
-      logger->log("port_set", 0, detail);
-
-      response.clear();
-      response["status"] = "ok";
-      response["port"] = portNum;
-      response["power"] = powerStr;
-      serializeJson(response, Serial);
-      Serial.println();
+      // Don't return - let WebSocket handler broadcast status update
     } else {
-      sendError("Failed to set port");
+      // Legacy: Check for power level (for backwards compatibility)
+      const char* powerStr = cmd["power"] | "default";
+      uint8_t powerLevel = POWER_DEFAULT;
+
+      if (strcmp(powerStr, "off") == 0) {
+        powerLevel = POWER_OFF;
+      } else if (strcmp(powerStr, "low") == 0) {
+        powerLevel = POWER_LOW;
+      } else if (strcmp(powerStr, "high") == 0) {
+        powerLevel = POWER_HIGH;
+      }
+
+      if (hub->setPortByNumber(portNum, powerLevel)) {
+        // Log with [hub:port] format and port name if available
+        uint8_t hubIndex, portIndex;
+        hub->getHubAndPort(portNum, hubIndex, portIndex);
+        const char* portName = portNames->getName(portNum);
+        char detail[32];
+        if (portName[0] != '\0') {
+          snprintf(detail, sizeof(detail), "[%d:%d] %s", hubIndex + 1, portIndex + 1, portName);
+        } else {
+          snprintf(detail, sizeof(detail), "[%d:%d]", hubIndex + 1, portIndex + 1);
+        }
+        logger->log("port_set", 0, detail);
+
+        response.clear();
+        response["status"] = "ok";
+        response["port"] = portNum;
+        response["power"] = powerStr;
+        serializeJson(response, Serial);
+        Serial.println();
+      } else {
+        sendError("Failed to set port");
+      }
     }
   }
 
@@ -1727,6 +1846,32 @@ private:
     }
   }
 
+  void handleRelayCommand(JsonDocument& cmd) {
+    // Check for state parameter (on/off)
+    if (cmd.containsKey("state")) {
+      bool state = cmd["state"];
+      relay->setState(state);
+      logger->log(state ? "relay_on" : "relay_off");
+      sendOK(state ? "Relay ON" : "Relay OFF");
+    }
+    // Check for default parameter (set boot default)
+    else if (cmd.containsKey("default")) {
+      bool defaultState = cmd["default"];
+      relay->setDefaultState(defaultState);
+      logger->log("relay_default", 0, defaultState ? "ON" : "OFF");
+
+      response.clear();
+      response["status"] = "ok";
+      response["relay_default"] = defaultState;
+      serializeJson(response, Serial);
+      Serial.println();
+    }
+    // No valid parameter
+    else {
+      sendError("Missing parameter: use 'state' (true/false) or 'default' (true/false)");
+    }
+  }
+
   void sendLog() {
     response.clear();
     response["status"] = "ok";
@@ -1806,6 +1951,11 @@ public:
     // Add port names
     portNames->toJson(response);
 
+    // Add relay state
+    JsonObject relayObj = response.createNestedObject("relay");
+    relayObj["state"] = relay->getState();
+    relayObj["default"] = relay->getDefaultState();
+
     serializeJson(response, Serial);
     Serial.println();
   }
@@ -1848,6 +1998,10 @@ public:
     Serial.println(F("  {\"cmd\":\"led\",\"led\":\"status\",\"action\":\"on\"}"));
     Serial.println(F("  {\"cmd\":\"led\",\"led\":\"activity\",\"action\":\"flash\"}"));
     Serial.println(F("  {\"cmd\":\"led\",\"led\":\"error\"}"));
+    Serial.println(F("\nRelay Control (External 5V):"));
+    Serial.println(F("  {\"cmd\":\"relay\",\"state\":true}   (turn ON)"));
+    Serial.println(F("  {\"cmd\":\"relay\",\"state\":false}  (turn OFF)"));
+    Serial.println(F("  {\"cmd\":\"relay\",\"default\":true} (set boot default)"));
     Serial.println(F("\nConfiguration:"));
     Serial.println(F("  {\"cmd\":\"config\",\"wifi\":{\"ssid\":\"MyNet\",\"pass\":\"pass\"}}"));
     Serial.println(F("  {\"cmd\":\"config\",\"wifi\":{\"enable\":false}}"));
@@ -1890,6 +2044,7 @@ LEDController ledController(STATUS_LED, ACTIVITY_LED);
 ConfigManager configManager;
 ActivityLogger activityLogger;
 PortNameManager portNameManager;
+RelayController relayController(RELAY_PIN);
 
 // Helper function for error logging - can be called from anywhere
 void logError(const char* errorType, uint8_t target = 0, const char* detail = nullptr) {
@@ -1897,7 +2052,7 @@ void logError(const char* errorType, uint8_t target = 0, const char* detail = nu
 }
 WiFiManager wifiManager(&configManager);
 CommandProcessor processor(&hubController, &pinController, &ledController,
-                          &configManager, &activityLogger, &wifiManager, &portNameManager);
+                          &configManager, &activityLogger, &wifiManager, &portNameManager, &relayController);
 
 // Web server and WebSocket
 WebServer webServer(80);
@@ -1951,6 +2106,23 @@ void handleWebRoot() {
   }
 }
 
+void handleWebVersion() {
+  // Return version info for UI update detection (size is sufficient for change detection)
+  StaticJsonDocument<128> doc;
+
+  if (LittleFS.exists("/index.html")) {
+    File file = LittleFS.open("/index.html", "r");
+    doc["size"] = file.size();
+    file.close();
+  } else {
+    doc["size"] = 0;
+  }
+
+  String response;
+  serializeJson(doc, response);
+  webServer.send(200, "application/json", response);
+}
+
 void handleWebNotFound() {
   Serial.print(F("HTTP: 404 - "));
   Serial.println(webServer.uri());
@@ -1963,9 +2135,9 @@ void handleWebStatus() {
   doc["status"] = "ok";
   doc["uptime"] = millis();
 
-  // Add port states
+  // Add port states (sequential mapping)
   JsonObject ports = doc.createNestedObject("ports");
-  for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
+  for (uint8_t i = 1; i <= hubController.getTotalPorts(); i++) {
     uint8_t hubIndex, portIndex;
     if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
       uint8_t state = hubController.getPortPower(i);
@@ -2046,8 +2218,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           status["status"] = "ok";
           status["uptime"] = millis();
 
-          // Add hubs info
-          JsonArray hubs = status.createNestedArray("hubs");
+          // Add hubs info (getStatus creates the "hubs" array)
           hubController.getStatus(status);
 
           // Add network info
@@ -2099,9 +2270,9 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
             i2c["last_fail_ago"] = millis() - i2cHealth.lastFailTime;
           }
 
-          // Add ports info
+          // Add ports info (sequential mapping)
           JsonObject ports = status.createNestedObject("ports");
-          for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
+          for (uint8_t i = 1; i <= hubController.getTotalPorts(); i++) {
             uint8_t hubIndex, portIndex;
             if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
               uint8_t state = hubController.getPortPower(i);
@@ -2138,27 +2309,17 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           String msg;
           serializeJson(logResponse, msg);
           wsServer.sendTXT(num, msg);
-        } else if (strcmp(action, "port") == 0) {
-          // Port command - send full status update to all clients
-          delay(50); // Give hardware time to update
-
-          StaticJsonDocument<4096> status;
-          status["status"] = "ok";
-          status["uptime"] = millis();
-
-          // Add hubs info with updated states
-          JsonArray hubs = status.createNestedArray("hubs");
-          hubController.getStatus(status);
-
-          // Add network info
-          JsonObject network = status.createNestedObject("network");
-          network["ip"] = WiFi.localIP().toString();
-          network["connected"] = true;
-
-          // Send full status to all connected clients
+        } else if (strcmp(action, "ping") == 0) {
+          // Ping command - send pong response for keepalive
+          StaticJsonDocument<128> pong;
+          pong["status"] = "ok";
+          pong["msg"] = "pong";
           String msg;
-          serializeJson(status, msg);
-          wsServer.broadcastTXT(msg);  // Broadcast to all clients
+          serializeJson(pong, msg);
+          wsServer.sendTXT(num, msg);
+        } else if (strcmp(action, "port") == 0 || strcmp(action, "hub") == 0) {
+          // Port/Hub command - send full status update to all clients
+          broadcastStatus();  // Use centralized broadcast function
         } else if (strcmp(action, "boot") == 0 || strcmp(action, "reset") == 0) {
           // Pin command - send success with details
           StaticJsonDocument<256> response;
@@ -2189,53 +2350,22 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           String msg;
           serializeJson(response, msg);
           wsServer.broadcastTXT(msg);  // Broadcast to ALL clients so UI updates
-        } else if (strcmp(action, "hub") == 0) {
-          // Hub command - send full status update to all clients
-          StaticJsonDocument<3072> status;
-          status["status"] = "ok";
-          status["uptime"] = millis();
+        } else if (strcmp(action, "relay") == 0) {
+          // Relay command - broadcast relay state update (command already processed above)
+          StaticJsonDocument<256> response;
+          response["status"] = "ok";
 
-          // Add hubs info
-          JsonArray hubs = status.createNestedArray("hubs");
-          hubController.getStatus(status);
+          // Send current relay state
+          JsonObject relayObj = response.createNestedObject("relay");
+          relayObj["state"] = relayController.getState();
+          relayObj["default"] = relayController.getDefaultState();
 
-          // Add network info
-          JsonObject network = status.createNestedObject("network");
-          network["ip"] = WiFi.localIP().toString();
-          network["connected"] = true;
-
-          // Add restart info
-          status["restart_reason"] = restartReason;
-          status["restart_time"] = restartTime;
-
-          // Send full status to all connected clients
           String msg;
-          serializeJson(status, msg);
-          wsServer.broadcastTXT(msg);  // Broadcast to all clients
+          serializeJson(response, msg);
+          wsServer.broadcastTXT(msg);  // Broadcast to ALL clients so UI updates
         } else if (strcmp(action, "alloff") == 0) {
           // All off command - send full status update to all clients
-          delay(50); // Give hardware time to update
-
-          StaticJsonDocument<4096> status;
-          status["status"] = "ok";
-          status["uptime"] = millis();
-
-          // Add hubs info with updated states
-          JsonArray hubs = status.createNestedArray("hubs");
-          hubController.getStatus(status);
-
-          // Add network info
-          JsonObject network = status.createNestedObject("network");
-          network["ip"] = WiFi.localIP().toString();
-          network["connected"] = true;
-
-          // Add confirmation message
-          status["msg"] = "All ports turned off";
-
-          // Send full status to all connected clients
-          String msg;
-          serializeJson(status, msg);
-          wsServer.broadcastTXT(msg);  // Broadcast to all clients
+          broadcastStatus();  // Use centralized broadcast function
         } else {
           // Other commands - generic success
           StaticJsonDocument<256> response;
@@ -2267,13 +2397,12 @@ void broadcastStatus() {
 
   StaticJsonDocument<4096> doc;
 
-  // Add full hub information
-  JsonArray hubs = doc.createNestedArray("hubs");
+  // Add full hub information (getStatus creates the "hubs" array)
   hubController.getStatus(doc);
 
-  // Add port states (for backward compatibility)
+  // Add port states (sequential mapping)
   JsonObject ports = doc.createNestedObject("ports");
-  for (uint8_t i = 1; i <= TOTAL_PORTS; i++) {
+  for (uint8_t i = 1; i <= hubController.getTotalPorts(); i++) {
     uint8_t hubIndex, portIndex;
     if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
       uint8_t state = hubController.getPortPower(i);
@@ -2334,6 +2463,14 @@ void broadcastStatus() {
   JsonObject pins = doc.createNestedObject("pins");
   pins["boot"] = digitalRead(BOOT_PIN);
   pins["reset"] = digitalRead(RESET_PIN);
+
+  // Add relay state
+  JsonObject relayObj = doc.createNestedObject("relay");
+  relayObj["state"] = relayController.getState();
+  relayObj["default"] = relayController.getDefaultState();
+
+  // Add port names
+  portNameManager.toJson(doc);
 
   String msg;
   serializeJson(doc, msg);
@@ -2398,38 +2535,43 @@ void logSystemStats() {
 }
 
 void logHubPortStatus() {
-  // Build hub/port status string: "1xxhx2hhhh3llll..."
-  // Format: hub_number followed by 4 port states (x=off, h=high, l=low)
+  // Build hub/port status string: "1xxhx2hhhh3llll..." using sequential port mapping
+  // Format: hub_number followed by port states (x=off, h=high, l=low)
   // Only log active hubs, enumerated from 1 regardless of I2C address
   char portStatus[128];
   int offset = 0;
   uint8_t activeHubNum = 1;  // Enumerate active hubs starting from 1
+  uint8_t totalPorts = hubController.getTotalPorts();
 
-  for (uint8_t hubIndex = 0; hubIndex < MAX_HUBS && offset < sizeof(portStatus) - 10; hubIndex++) {
-    if (hubController.isHubConnected(hubIndex)) {
-      // Add hub number
-      offset += snprintf(portStatus + offset, sizeof(portStatus) - offset, "%d", activeHubNum);
+  // Single pass through all ports (already in sequential order)
+  uint8_t lastHubIdx = 0xFF;  // Track when we move to a new hub
 
-      // Add 4 port states for this hub
-      for (uint8_t portIndex = 0; portIndex < PORTS_PER_HUB; portIndex++) {
-        uint8_t portNum = hubIndex * PORTS_PER_HUB + portIndex + 1;
-        uint8_t powerLevel = hubController.getPortPower(portNum);
-
-        char portChar;
-        if (powerLevel == POWER_OFF) {
-          portChar = 'x';
-        } else if (powerLevel == POWER_LOW) {
-          portChar = 'l';
-        } else {  // POWER_HIGH
-          portChar = 'h';
+  for (uint8_t logicalPort = 1; logicalPort <= totalPorts && offset < sizeof(portStatus) - 10; logicalPort++) {
+    uint8_t hubIdx, portIdx;
+    if (hubController.getHubAndPort(logicalPort, hubIdx, portIdx)) {
+      // When we encounter a new hub, add the hub number
+      if (hubIdx != lastHubIdx) {
+        if (lastHubIdx != 0xFF) {
+          activeHubNum++;  // Increment for next hub
         }
-
-        if (offset < sizeof(portStatus) - 1) {
-          portStatus[offset++] = portChar;
-        }
+        offset += snprintf(portStatus + offset, sizeof(portStatus) - offset, "%d", activeHubNum);
+        lastHubIdx = hubIdx;
       }
 
-      activeHubNum++;
+      // Add port state character
+      uint8_t powerLevel = hubController.getPortPower(logicalPort);
+      char portChar;
+      if (powerLevel == POWER_OFF) {
+        portChar = 'x';
+      } else if (powerLevel == POWER_LOW) {
+        portChar = 'l';
+      } else {  // POWER_HIGH
+        portChar = 'h';
+      }
+
+      if (offset < sizeof(portStatus) - 1) {
+        portStatus[offset++] = portChar;
+      }
     }
   }
 
@@ -2442,32 +2584,6 @@ void logHubPortStatus() {
 
 void setup() {
   Serial.begin(115200);
-
-  // USB device identification temporarily disabled
-  // The custom USB descriptors are causing "config 1 has no interfaces" error
-  // when used with CDCOnBoot=cdc compilation flag
-  // TODO: Fix USB descriptor configuration to work with CDC enabled at boot
-  /*
-  #if defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
-    #if ARDUINO_USB_MODE
-      // Set custom USB device descriptors
-      USB.manufacturerName(USB_MANUFACTURER_NAME);
-      USB.productName(USB_PRODUCT_NAME);
-
-      // Generate unique serial number based on MAC address
-      uint8_t mac[6];
-      WiFi.macAddress(mac);
-      char serialNum[32];
-      snprintf(serialNum, sizeof(serialNum), "%s%02X%02X%02X%02X%02X%02X",
-               USB_SERIAL_PREFIX,
-               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      USB.serialNumber(serialNum);
-
-      USB.begin();
-      delay(100);  // Give USB time to initialize
-    #endif
-  #endif
-  */
 
   // Wait for serial or timeout
   uint32_t start = millis();
@@ -2556,6 +2672,7 @@ void setup() {
   configManager.begin();
   activityLogger.begin();
   portNameManager.begin();
+  relayController.begin();
 
   // Log the restart
   activityLogger.log("system_restart", 0, restartReason.c_str());
@@ -2633,6 +2750,7 @@ void setup() {
       Serial.println(F("Configuring web server routes..."));
       webServer.on("/", handleWebRoot);
       webServer.on("/status", handleWebStatus);
+      webServer.on("/version", handleWebVersion);
       webServer.onNotFound(handleWebNotFound);
       webServer.begin();
       Serial.print(F("Web server started on port 80 at http://"));

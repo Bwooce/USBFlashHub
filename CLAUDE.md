@@ -51,6 +51,7 @@ RESET_PIN: GPIO 12 (active LOW)
 STATUS_LED: GPIO 15
 ACTIVITY_LED: GPIO 13
 EMERGENCY_BTN: GPIO 0
+RELAY_PIN: GPIO 5 (external 5V control)
 ```
 
 **ESP32-C3 (C3 Zero/Mini):**
@@ -62,6 +63,7 @@ RESET_PIN: GPIO 7 (active LOW)
 STATUS_LED: GPIO 8
 ACTIVITY_LED: GPIO 10
 EMERGENCY_BTN: GPIO 9
+RELAY_PIN: GPIO 2 (external 5V control)
 ```
 
 **ESP32-S3 (S3 Zero/Mini):**
@@ -72,6 +74,7 @@ BOOT_PIN: GPIO 3
 RESET_PIN: GPIO 4 (active LOW)
 RGB_LED: GPIO 21 (onboard WS2812)
 EMERGENCY_BTN: GPIO 0
+RELAY_PIN: GPIO 5 (external 5V control)
 
 LED Colors:
 - Green: Status OK
@@ -88,6 +91,7 @@ RESET_PIN: GPIO 12 (active LOW)
 STATUS_LED: GPIO 2
 ACTIVITY_LED: GPIO 4
 EMERGENCY_BTN: GPIO 0
+RELAY_PIN: GPIO 5 (external 5V control)
 ```
 
 ### Power Levels
@@ -181,6 +185,15 @@ python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws
 {"cmd":"led","led":"activity","action":"flash"}
 {"cmd":"led","led":"error"}                // Error pattern
 ```
+
+### Relay Control (External 5V Power)
+```json
+{"cmd":"relay","state":true}               // Turn relay ON
+{"cmd":"relay","state":false}              // Turn relay OFF
+{"cmd":"relay","default":true}             // Set default state on boot to ON
+{"cmd":"relay","default":false}            // Set default state on boot to OFF
+```
+**Hardware:** Relay controls external 5V power via High Level Trigger Solid State Relay connected to RELAY_PIN. Integrated with emergency stop (`alloff` command). Default state is ON on boot (configurable via `default` parameter). State is included in status responses.
 
 ### Status
 ```json

@@ -16,6 +16,7 @@ Provides simplified static port numbering and direct pin control for the I2C USB
 - **System Name**: Customizable system name for UI and mDNS hostname (max 15 chars)
 - **LED Control**: Status, activity, and error indication (RGB on S3)
 - **Pin Control**: Direct boot/reset pin control for device programming
+- **Relay Control**: External 5V power control via High Level Trigger SSR
 - **Activity Logging**: PSRAM-based circular buffer with up to 10,000 entries
 - **Python Automation**: Testing agents and control scripts included
 - **Robust I2C**: Automatic retry with exponential backoff for reliability
@@ -148,6 +149,14 @@ python3 testing_agent.py --config test_rules.yaml
 {"cmd":"led","led":"activity","action":"flash"}
 {"cmd":"led","led":"error"}
 ```
+
+**Relay Control:**
+```json
+{"cmd":"relay","state":true}
+{"cmd":"relay","state":false}
+{"cmd":"relay","default":true}
+```
+*Controls external 5V power via High Level Trigger SSR. Integrated with emergency stop. Default: ON on boot (configurable).*
 
 **System Commands:**
 ```json

@@ -259,6 +259,22 @@
             color: white;
         }
 
+        /* Shared active/inactive button styling */
+        .btn.btn-active,
+        .btn-control.btn-active {
+            background: #673ab7;
+            color: white;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(103, 58, 183, 0.3);
+        }
+
+        .btn.btn-inactive,
+        .btn-control.btn-inactive {
+            background: #9e9e9e;
+            color: #666;
+            font-weight: normal;
+        }
+
         .control-section {
             margin-bottom: 20px;
         }
@@ -284,21 +300,12 @@
             transition: all 0.3s ease;
         }
 
-        .btn-control.btn-active {
-            background: #673ab7;
-            color: white;
-            font-weight: bold;
-            box-shadow: 0 2px 4px rgba(103, 58, 183, 0.3);
-        }
-
-        .btn-control.btn-inactive {
-            background: #9e9e9e;
-            color: #666;
-            font-weight: normal;
-        }
-
         .btn-control:hover:not(.btn-inactive) {
             background: #5e35b1;
+        }
+
+        .btn:hover:not(.btn-inactive) {
+            transform: scale(1.05);
         }
 
         .btn-control.danger {

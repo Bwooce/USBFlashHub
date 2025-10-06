@@ -605,6 +605,24 @@ public:
     return connectedHubs[hubIndex];
   }
 
+  // Convert sequential hub number (1-based) to actual hub index in arrays
+  bool getHubIndex(uint8_t hubNum, uint8_t& hubIndex) {
+    if (hubNum < 1) return false;
+
+    // Find the Nth connected hub (where N = hubNum)
+    uint8_t sequentialCount = 0;
+    for (uint8_t idx = 0; idx < MAX_HUBS; idx++) {
+      if (connectedHubs[idx]) {
+        sequentialCount++;
+        if (sequentialCount == hubNum) {
+          hubIndex = idx;
+          return true;
+        }
+      }
+    }
+    return false;  // Hub number out of range
+  }
+
   // Get LED state of a specific hub (bit 3 is LED control)
   bool getHubLEDState(uint8_t hubIndex) {
     if (hubIndex >= MAX_HUBS) return false;
@@ -1675,12 +1693,17 @@ private:
   void handleHubCommand(JsonDocument& cmd) {
     uint8_t hubNum = cmd["hub"] | 0;
 
-    if (hubNum == 0 || hubNum > MAX_HUBS) {
+    if (hubNum == 0) {
       sendError("Invalid hub number");
       return;
     }
 
-    uint8_t hubIndex = hubNum - 1;
+    // Convert sequential hub number to actual hub index
+    uint8_t hubIndex;
+    if (!hub->getHubIndex(hubNum, hubIndex)) {
+      sendError("Hub not found");
+      return;
+    }
 
     // Handle LED control
     if (cmd.containsKey("led")) {

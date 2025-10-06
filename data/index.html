@@ -509,6 +509,7 @@
         let resetPinState = true;
         let versionCheckTimer;
         let currentVersion = null;
+        let connectionHealthy = false;
         window.portNames = {};
 
         function stopKeepalive() {
@@ -537,6 +538,7 @@
                         if (timeSincePong > 10000) {
                             console.error('WebSocket keepalive timeout - no pong received');
                             addLog('Connection timeout - no response from device', 'error');
+                            connectionHealthy = false;
                             ws.close();
                         }
                     }, 10000);
@@ -632,6 +634,7 @@
                 console.log('WebSocket connected');
                 document.getElementById('wsStatus').classList.add('connected');
                 document.getElementById('connectionStatus').textContent = 'Connected';
+                connectionHealthy = true;
                 clearTimeout(reconnectTimer);
                 startKeepalive();
                 refreshStatus();
@@ -640,8 +643,15 @@
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    // Update last pong time on any message (connection is alive)
-                    lastPongTime = Date.now();
+                    // Only update lastPongTime on actual pong responses
+                    if (data.status === 'ok' && data.msg === 'pong') {
+                        lastPongTime = Date.now();
+                        connectionHealthy = true;
+                        if (pongTimeout) {
+                            clearTimeout(pongTimeout);
+                            pongTimeout = null;
+                        }
+                    }
                     handleMessage(data);
                 } catch (e) {
                     console.error('Failed to parse message:', e);
@@ -651,6 +661,7 @@
             ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
                 addLog(`WebSocket error: Cannot connect to ws://${wsHost}:81`, 'error');
+                connectionHealthy = false;
                 stopKeepalive();
                 clearStaleData();
             };
@@ -658,6 +669,7 @@
             ws.onclose = () => {
                 document.getElementById('wsStatus').classList.remove('connected');
                 document.getElementById('connectionStatus').textContent = 'Disconnected';
+                connectionHealthy = false;
                 stopKeepalive();
                 clearStaleData();
                 reconnectTimer = setTimeout(initWebSocket, 3000);
@@ -665,11 +677,31 @@
         }
 
         function sendCommand(cmd) {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(cmd));
-                return true;
+            // Check if connection is healthy (not just OPEN)
+            if (ws && ws.readyState === WebSocket.OPEN && connectionHealthy) {
+                try {
+                    ws.send(JSON.stringify(cmd));
+                    return true;
+                } catch (e) {
+                    console.error('WebSocket send failed:', e);
+                    addLog('Connection error - reconnecting...', 'error');
+                    connectionHealthy = false;
+                    ws.close();
+                    return false;
+                }
             }
-            console.error('WebSocket not connected');
+
+            // Connection is not healthy - show error and try to recover
+            console.error('WebSocket not connected or unhealthy');
+            if (!connectionHealthy && ws && ws.readyState === WebSocket.OPEN) {
+                // Socket appears open but is unhealthy - force close and reconnect
+                console.warn('Forcing reconnect of unhealthy connection');
+                addLog('Connection appears stuck - forcing reconnect...', 'error');
+                ws.close();
+            } else if (!ws || ws.readyState === WebSocket.CLOSED) {
+                addLog('Not connected - attempting reconnect...', 'error');
+                initWebSocket();
+            }
             return false;
         }
 
@@ -807,9 +839,10 @@
         }
 
         function setPort(port, state) {
-            if (sendCommand({ cmd: 'port', port: port, enable: state === 'on' })) {
-                // Request status update after a short delay
-                setTimeout(() => sendCommand({ cmd: 'status' }), 100);
+            const success = sendCommand({ cmd: 'port', port: port, enable: state === 'on' });
+            if (success) {
+                // Give immediate visual feedback
+                console.log(`Port ${port} command sent: ${state}`);
             } else {
                 addLog(`Failed to send port ${port} command - not connected`, 'error');
             }

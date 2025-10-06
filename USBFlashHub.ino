@@ -2331,6 +2331,16 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           // Add port names
           portNameManager.toJson(status);
 
+          // Add pin states
+          JsonObject pins = status.createNestedObject("pins");
+          pins["boot"] = digitalRead(BOOT_PIN);
+          pins["reset"] = digitalRead(RESET_PIN);
+
+          // Add relay state
+          JsonObject relay = status.createNestedObject("relay");
+          relay["state"] = relayController.getState();
+          relay["default"] = relayController.getDefaultState();
+
           String msg;
           serializeJson(status, msg);
 

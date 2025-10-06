@@ -416,21 +416,21 @@
                     <div class="control-group">
                         <label>Boot Pin:</label>
                         <span id="bootState" class="pin-state low">LOW</span>
-                        <button class="btn-control" onclick="setPinState('boot', true)">HIGH</button>
-                        <button class="btn-control" onclick="setPinState('boot', false)">LOW</button>
+                        <button id="bootHighBtn" class="btn-control btn-inactive" onclick="setPinState('boot', true)">HIGH</button>
+                        <button id="bootLowBtn" class="btn-control btn-active" onclick="setPinState('boot', false)">LOW</button>
                     </div>
                     <div class="control-group">
                         <label>Reset Pin:</label>
                         <span id="resetState" class="pin-state high">HIGH</span>
-                        <button class="btn-control" onclick="setPinState('reset', true)">Assert</button>
-                        <button class="btn-control" onclick="setPinState('reset', false)">Release</button>
+                        <button id="resetAssertBtn" class="btn-control btn-inactive" onclick="setPinState('reset', true)">Assert</button>
+                        <button id="resetReleaseBtn" class="btn-control btn-active" onclick="setPinState('reset', false)">Release</button>
                         <button class="btn-control" onclick="pulseReset()">Pulse</button>
                     </div>
                     <div class="control-group">
                         <label>External 5V Relay:</label>
                         <span id="relayState" class="pin-state low">OFF</span>
-                        <button class="btn-control" onclick="setRelayState(true)">ON</button>
-                        <button class="btn-control" onclick="setRelayState(false)">OFF</button>
+                        <button id="relayOnBtn" class="btn-control btn-inactive" onclick="setRelayState(true)">ON</button>
+                        <button id="relayOffBtn" class="btn-control btn-active" onclick="setRelayState(false)">OFF</button>
                     </div>
                 </div>
 
@@ -941,10 +941,16 @@
                     bootPinState = state;
                     document.getElementById('bootState').className = `pin-state ${state ? 'high' : 'low'}`;
                     document.getElementById('bootState').textContent = state ? 'HIGH' : 'LOW';
+                    // Update button states
+                    document.getElementById('bootHighBtn').className = `btn-control ${state ? 'btn-active' : 'btn-inactive'}`;
+                    document.getElementById('bootLowBtn').className = `btn-control ${!state ? 'btn-active' : 'btn-inactive'}`;
                 } else if (pin === 'reset') {
                     resetPinState = state;
                     document.getElementById('resetState').className = `pin-state ${state ? 'high' : 'low'}`;
                     document.getElementById('resetState').textContent = state ? 'HIGH' : 'LOW';
+                    // Update button states
+                    document.getElementById('resetAssertBtn').className = `btn-control ${state ? 'btn-active' : 'btn-inactive'}`;
+                    document.getElementById('resetReleaseBtn').className = `btn-control ${!state ? 'btn-active' : 'btn-inactive'}`;
                 }
             } else {
                 addLog(`Failed to send ${pin} command - not connected`, 'error');
@@ -960,6 +966,9 @@
                 // Update UI immediately
                 document.getElementById('relayState').className = `pin-state ${state ? 'high' : 'low'}`;
                 document.getElementById('relayState').textContent = state ? 'ON' : 'OFF';
+                // Update button states
+                document.getElementById('relayOnBtn').className = `btn-control ${state ? 'btn-active' : 'btn-inactive'}`;
+                document.getElementById('relayOffBtn').className = `btn-control ${!state ? 'btn-active' : 'btn-inactive'}`;
             } else {
                 addLog('Failed to send relay command - not connected', 'error');
             }
@@ -1079,11 +1088,17 @@
                 bootPinState = pins.boot;
                 document.getElementById('bootState').className = `pin-state ${pins.boot ? 'high' : 'low'}`;
                 document.getElementById('bootState').textContent = pins.boot ? 'HIGH' : 'LOW';
+                // Update button states
+                document.getElementById('bootHighBtn').className = `btn-control ${pins.boot ? 'btn-active' : 'btn-inactive'}`;
+                document.getElementById('bootLowBtn').className = `btn-control ${!pins.boot ? 'btn-active' : 'btn-inactive'}`;
             }
             if (pins.reset !== undefined) {
                 resetPinState = pins.reset;
                 document.getElementById('resetState').className = `pin-state ${pins.reset ? 'high' : 'low'}`;
                 document.getElementById('resetState').textContent = pins.reset ? 'HIGH' : 'LOW';
+                // Update button states
+                document.getElementById('resetAssertBtn').className = `btn-control ${pins.reset ? 'btn-active' : 'btn-inactive'}`;
+                document.getElementById('resetReleaseBtn').className = `btn-control ${!pins.reset ? 'btn-active' : 'btn-inactive'}`;
             }
         }
 
@@ -1091,6 +1106,9 @@
             if (relay.state !== undefined) {
                 document.getElementById('relayState').className = `pin-state ${relay.state ? 'high' : 'low'}`;
                 document.getElementById('relayState').textContent = relay.state ? 'ON' : 'OFF';
+                // Update button states
+                document.getElementById('relayOnBtn').className = `btn-control ${relay.state ? 'btn-active' : 'btn-inactive'}`;
+                document.getElementById('relayOffBtn').className = `btn-control ${!relay.state ? 'btn-active' : 'btn-inactive'}`;
             }
         }
 

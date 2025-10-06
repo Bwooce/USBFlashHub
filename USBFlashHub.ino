@@ -567,6 +567,19 @@ public:
     return portPowerStates[portNum - 1];
   }
 
+  // Get hub's current power level (from bit 0 of hub state)
+  uint8_t getHubPower(uint8_t hubIndex) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return POWER_HIGH;
+    // Bit 0 clear = POWER_HIGH, Bit 0 set = POWER_LOW
+    return (hubStates[hubIndex] & 0x01) ? POWER_LOW : POWER_HIGH;
+  }
+
+  // Set port power state for tracking (used by enable/disable commands)
+  void setPortPowerState(uint8_t portNum, uint8_t powerLevel) {
+    if (portNum < 1 || portNum > totalAvailablePorts) return;
+    portPowerStates[portNum - 1] = powerLevel;
+  }
+
   // Check if port is enabled
   bool isPortEnabled(uint8_t hubIndex, uint8_t portIndex) {
     if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return false;
@@ -1593,6 +1606,16 @@ private:
       }
 
       hub->setPort(hubIndex, portIndex, enable);
+
+      // Update power state tracking for system stats logging
+      if (enable) {
+        // When enabling, inherit the hub's current power level (bit 0 of hub state)
+        uint8_t powerLevel = hub->getHubPower(hubIndex);
+        hub->setPortPowerState(portNum, powerLevel);
+      } else {
+        // When disabling, set to POWER_OFF
+        hub->setPortPowerState(portNum, POWER_OFF);
+      }
 
       // Log with [hub:port] format and port name if available
       const char* portName = portNames->getName(portNum);

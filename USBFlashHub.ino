@@ -2344,6 +2344,9 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           String msg;
           serializeJson(status, msg);
 
+          // Feed watchdog before potentially blocking send
+          esp_task_wdt_reset();
+
           // Check for buffer overflow
           if (status.overflowed()) {
             Serial.println(F("ERROR: Status JSON buffer overflow!"));
@@ -2451,6 +2454,9 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 void broadcastStatus() {
   if (!wsConnected) return;
 
+  // Feed watchdog before potentially long operation
+  esp_task_wdt_reset();
+
   StaticJsonDocument<4096> doc;
 
   // Add full hub information (getStatus creates the "hubs" array)
@@ -2530,6 +2536,10 @@ void broadcastStatus() {
 
   String msg;
   serializeJson(doc, msg);
+
+  // Feed watchdog before broadcast (can block if WiFi is slow)
+  esp_task_wdt_reset();
+
   wsServer.broadcastTXT(msg);
 }
 

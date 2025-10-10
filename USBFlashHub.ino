@@ -2837,11 +2837,28 @@ void setup() {
   processor.sendStatus();
 }
 
+// Track loop health for watchdog debugging
+static uint32_t lastLoopTime = 0;
+static uint32_t loopCount = 0;
+static const char* lastOperation = "init";
+
 void loop() {
   // Feed the watchdog
   esp_task_wdt_reset();
 
+  // Track loop timing for diagnostics
+  uint32_t loopStart = millis();
+  loopCount++;
+
+  // Log if loop is taking too long (>5 seconds between iterations)
+  if (lastLoopTime > 0 && (loopStart - lastLoopTime) > 5000) {
+    Serial.printf("WARNING: Loop blocked for %lu ms at operation: %s\n",
+                  loopStart - lastLoopTime, lastOperation);
+  }
+  lastLoopTime = loopStart;
+
   // Network reconnect handler
+  lastOperation = "wifi";
   wifiManager.loop();
 
   // Check emergency stop (non-blocking state machine)
@@ -2865,6 +2882,7 @@ void loop() {
   }
 
   // Process serial commands
+  lastOperation = "serial";
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
@@ -2875,12 +2893,16 @@ void loop() {
 
   // Handle web server and WebSocket if WiFi is connected
   if (wifiManager.isConnected()) {
+    lastOperation = "webserver";
     webServer.handleClient();
+
+    lastOperation = "websocket";
     wsServer.loop();
 
     // Broadcast status updates periodically
     static uint32_t lastBroadcast = 0;
     if (millis() - lastBroadcast > BROADCAST_INTERVAL) {
+      lastOperation = "broadcast";
       broadcastStatus();
       lastBroadcast = millis();
     }
@@ -2903,5 +2925,16 @@ void loop() {
     logSystemStats();
     logHubPortStatus();
     lastStatsLog = millis();
+  }
+
+  // Watchdog health check every 10 minutes
+  static uint32_t lastWdtLog = 0;
+  if (millis() - lastWdtLog > 600000) {
+    uint32_t uptimeHours = millis() / 3600000;
+    uint32_t uptimeMins = (millis() % 3600000) / 60000;
+    Serial.printf("Watchdog health: %luh%lum, loop count: %lu, last op: %s\n",
+                  (unsigned long)uptimeHours, (unsigned long)uptimeMins,
+                  (unsigned long)loopCount, lastOperation);
+    lastWdtLog = millis();
   }
 }

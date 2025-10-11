@@ -518,6 +518,34 @@
         let connectionHealthy = false;
         window.portNames = {};
 
+        // Format Unix timestamp (UTC seconds) to browser's local time with timezone
+        function formatTimestamp(timestamp) {
+            if (!timestamp || timestamp === 0) {
+                return '??:??:??';
+            }
+            const date = new Date(timestamp * 1000);  // Convert to milliseconds
+            const time = date.toLocaleTimeString('en-US', { hour12: false });
+
+            // Use browser's default locale (not forcing en-US) to get proper timezone abbreviations
+            const locale = navigator.language || 'en-US';
+
+            // Try shortGeneric first (PT, ET, etc)
+            let tzString = new Intl.DateTimeFormat(locale, { timeZoneName: 'shortGeneric' }).format(date);
+            let tzMatch = tzString.match(/\b([A-Z]{2,4})\b/);
+            if (tzMatch) return `${time} ${tzMatch[1]}`;
+
+            // Fallback to short (AEDT, AEST, PST, PDT, etc)
+            tzString = new Intl.DateTimeFormat(locale, { timeZoneName: 'short' }).format(date);
+            tzMatch = tzString.match(/\b([A-Z]{2,4})\b/);
+            if (tzMatch) return `${time} ${tzMatch[1]}`;
+
+            // If we got GMT+11 format, extract that
+            tzMatch = tzString.match(/GMT([+-]\d+)/);
+            if (tzMatch) return `${time} GMT${tzMatch[1]}`;
+
+            return time;
+        }
+
         function stopKeepalive() {
             if (pingTimer) {
                 clearInterval(pingTimer);
@@ -533,23 +561,23 @@
             stopKeepalive();
             lastPongTime = Date.now();
 
-            // Send ping every 5 seconds
+            // Send ping every 3 seconds
             pingTimer = setInterval(() => {
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({cmd: 'ping'}));
 
-                    // Set timeout to detect no pong response
+                    // Set timeout to detect no pong response (3 second timeout)
                     pongTimeout = setTimeout(() => {
                         const timeSincePong = Date.now() - lastPongTime;
-                        if (timeSincePong > 10000) {
+                        if (timeSincePong > 3000) {
                             console.error('WebSocket keepalive timeout - no pong received');
                             addLog('Connection timeout - no response from device', 'error');
                             connectionHealthy = false;
                             ws.close();
                         }
-                    }, 10000);
+                    }, 3000);
                 }
-            }, 5000);
+            }, 3000);
         }
 
         function checkVersion() {
@@ -563,26 +591,14 @@
                         currentVersion = newVersion;
                         console.log('UI version initialized:', currentVersion, 'bytes');
                     } else if (currentVersion !== newVersion) {
-                        // Version changed - prompt for reload
-                        console.warn('UI version changed:', currentVersion, '->', newVersion);
-                        showReloadBanner();
-                        currentVersion = newVersion;
+                        // Version changed - auto-reload
+                        console.warn('UI version changed:', currentVersion, '->', newVersion, '- reloading...');
+                        location.reload();
                     }
                 })
                 .catch(err => {
                     console.error('Version check failed:', err);
                 });
-        }
-
-        function showReloadBanner() {
-            // Check if banner already exists
-            if (document.getElementById('reloadBanner')) return;
-
-            const banner = document.createElement('div');
-            banner.id = 'reloadBanner';
-            banner.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; background: #FF9800; color: white; padding: 12px 20px; text-align: center; z-index: 10000; box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-weight: 500;';
-            banner.innerHTML = '⚠ UI has been updated. <button onclick="location.reload()" style="margin-left: 15px; padding: 6px 20px; background: white; color: #FF9800; border: none; border-radius: 4px; font-weight: bold; cursor: pointer;">Reload Now</button>';
-            document.body.insertBefore(banner, document.body.firstChild);
         }
 
         function startVersionCheck() {
@@ -1134,7 +1150,7 @@
                     // Append directly (don't use addLogEntry which inserts at top)
                     const logEntry = document.createElement('div');
                     logEntry.className = `log-entry ${entry.type || ''}`;
-                    logEntry.innerHTML = `<span class="log-time">${entry.time}</span>${msg}`;
+                    logEntry.innerHTML = `<span class="log-time">${formatTimestamp(entry.time)}</span>${msg}`;
                     logDiv.appendChild(logEntry);
                 });
             }
@@ -1151,7 +1167,7 @@
             // Create log entry and insert at top for real-time display
             const logEntry = document.createElement('div');
             logEntry.className = `log-entry ${entry.type || ''}`;
-            logEntry.innerHTML = `<span class="log-time">${entry.time}</span>${msg}`;
+            logEntry.innerHTML = `<span class="log-time">${formatTimestamp(entry.time)}</span>${msg}`;
             logDiv.insertBefore(logEntry, logDiv.firstChild);
 
             // Keep only last 100 entries

@@ -323,3 +323,4 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=enabled USBFl
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32 USBFlashHub.ino
 ```
+- there is a script called upload_data.py in our repo directory for uploading index.html to LittleFS

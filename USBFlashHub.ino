@@ -710,6 +710,9 @@ private:
   // I2C write with retry logic and exponential backoff
   bool writeI2CRegister(uint8_t addr, uint8_t reg, uint8_t value, uint8_t maxRetries = 3) {
     for (uint8_t attempt = 0; attempt < maxRetries; attempt++) {
+      // Feed watchdog before I2C operation (can block even with timeout)
+      esp_task_wdt_reset();
+
       wire->beginTransmission(addr);
       wire->write(reg);
       wire->write(value);
@@ -720,10 +723,13 @@ private:
         return true;
       }
 
+      // Feed watchdog after failed I2C operation
+      esp_task_wdt_reset();
+
       // Exponential backoff before retry (10ms, 20ms, 30ms)
       if (attempt < maxRetries - 1) {
         delay(10 * (attempt + 1));
-        esp_task_wdt_reset();  // Feed watchdog during retry
+        esp_task_wdt_reset();  // Feed watchdog during retry delay
       }
     }
 
@@ -1001,15 +1007,8 @@ public:
       uint16_t idx = (header->writeIndex - 1 - i + MAX_ENTRIES) % MAX_ENTRIES;
       JsonObject entry = logs.createNestedObject();
 
-      if (entries[idx].timestamp > 0) {
-        struct tm timeinfo;
-        localtime_r(&entries[idx].timestamp, &timeinfo);
-        char timeStr[32];
-        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-        entry["time"] = timeStr;
-      } else {
-        entry["time"] = entries[idx].timestamp;  // Fallback to millis if no NTP
-      }
+      // Send raw Unix timestamp (UTC) - browser will convert to local timezone
+      entry["time"] = entries[idx].timestamp;
 
       entry["action"] = entries[idx].action;
       if (entries[idx].target > 0) entry["target"] = entries[idx].target;
@@ -2117,15 +2116,8 @@ void broadcastLogToWebSocket(const struct LogEntry& entry) {
   StaticJsonDocument<256> doc;
   doc["type"] = "log_entry";
 
-  if (entry.timestamp > 0) {
-    struct tm timeinfo;
-    localtime_r(&entry.timestamp, &timeinfo);
-    char timeStr[32];
-    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-    doc["time"] = timeStr;
-  } else {
-    doc["time"] = entry.timestamp;
-  }
+  // Send raw Unix timestamp (UTC) - browser will convert to local timezone
+  doc["time"] = entry.timestamp;
 
   doc["action"] = entry.action;
   if (entry.target > 0) doc["target"] = entry.target;
@@ -2755,6 +2747,15 @@ void setup() {
   Serial.print(F(", SCL="));
   Serial.println(I2C_SCL);
   Wire.begin(I2C_SDA, I2C_SCL);
+
+  // Set I2C timeout to 250ms to prevent indefinite blocking
+  // This protects against hung I2C devices that never respond
+  Wire.setTimeOut(250);
+  Serial.println(F("  I2C timeout set to 250ms"));
+
+  // Note: ESP32 Arduino Core enables internal pull-ups automatically
+  // If you need external pull-ups, add 4.7kΩ resistors from 3.3V to SDA/SCL
+
   Serial.println(F("  I2C initialized"));
 
   pinController.begin();

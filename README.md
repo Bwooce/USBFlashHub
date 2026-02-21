@@ -24,6 +24,22 @@ Provides simplified static port numbering and direct pin control for the I2C USB
 
 ## Hardware Support
 
+### Hub PCA9557 Bit Mapping
+| Bit | Function | Hardware Designator |
+|-----|----------|---------------------|
+| 0 | Current Limit Toggle | P0 |
+| 1 | USB-C VBUS Path (Switch) | U7 / Q5 |
+| 3 | Status LEDs | LED1-4 |
+| 4 | USB-A Port 1 | U3 / Q1 |
+| 5 | USB-A Port 2 | U4 / Q2 |
+| 6 | USB-A Port 3 | U5 / Q3 |
+| 7 | USB-A Port 4 | U6 / Q4 |
+
+**Hardware Reasoning:**
+- **USB-C VBUS Path**: Bit 1 (U7 / Q5) enables the power path between the USB-C VBUS and the main 5V rail. This allows the hub to be powered via USB-C or to provide 5V power to the USB-C port.
+- **Current Alignment**: The current limit (Bit 0) is shared across all load switches (U3-U7), ensuring that USB-C side current configuration is always aligned with the overall high/low current setting.
+- **Warning**: Avoid cross-connecting 5V from the header pin and 5V from the USB-C port unless intended. Bit 1 connects these rails directly.
+
 ### Supported Boards
 - **ESP32-S2** (Wemos S2 Mini)
 - **ESP32-S3** (S3 Zero with RGB LED)
@@ -139,6 +155,8 @@ python3 testing_agent.py --config test_rules.yaml
 ```json
 {"cmd":"hub","hub":1,"led":true}
 {"cmd":"hub","hub":1,"led":false}
+{"cmd":"hub","hub":1,"usbc":true}
+{"cmd":"hub","hub":1,"usbc":false}
 {"cmd":"hub","hub":1,"state":255}
 {"cmd":"alloff"}
 ```

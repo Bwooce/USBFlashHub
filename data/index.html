@@ -821,6 +821,11 @@
                             <button class="btn ${!hub.led ? 'btn-active' : 'btn-inactive'}" onclick="setHubLED(${hub.num}, false)">Off</button>
                             <button class="btn ${hub.led ? 'btn-active' : 'btn-inactive'}" onclick="setHubLED(${hub.num}, true)">On</button>
                         </div>
+                        <div class="control-group">
+                            <label>USB-C VBUS Path:</label>
+                            <button class="btn ${!hub.usbc ? 'btn-active' : 'btn-inactive'}" onclick="setHubUSBC(${hub.num}, false)">Isolated</button>
+                            <button class="btn ${hub.usbc ? 'btn-active' : 'btn-inactive'}" onclick="setHubUSBC(${hub.num}, true)">Linked</button>
+                        </div>
                     </div>
                     <div class="ports-row"></div>
                 `;
@@ -886,6 +891,15 @@
                 setTimeout(() => sendCommand({ cmd: 'status' }), 100);
             } else {
                 addLog(`Failed to send hub LED command - not connected`, 'error');
+            }
+        }
+
+        function setHubUSBC(hubNum, on) {
+            if (sendCommand({ cmd: 'hub', hub: hubNum, usbc: on })) {
+                // Request status update after a short delay
+                setTimeout(() => sendCommand({ cmd: 'status' }), 100);
+            } else {
+                addLog(`Failed to send hub USB-C command - not connected`, 'error');
             }
         }
 

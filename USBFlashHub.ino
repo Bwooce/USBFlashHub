@@ -52,6 +52,17 @@
 //   Hub 8 (0x1F): Ports 29-32
 //
 // ============================================
+// BIT MAPPING REFERENCE (Hub PCA9557)
+// ============================================
+// Bit,Function,Hardware Designator
+// Bit 0,Current Limit Toggle,P0
+// Bit 1,USB-C Power Switch,U7 / Q5
+// Bit 3,Status LEDs,LED1-4
+// Bit 4,USB-A Port 1,U3 / Q1
+// Bit 5,USB-A Port 2,U4 / Q2
+// Bit 6,USB-A Port 3,U5 / Q3
+// Bit 7,USB-A Port 4,U6 / Q4
+// ============================================
 // RESPONSE FORMATS
 // ============================================
 // Success Response:
@@ -455,6 +466,12 @@ public:
     //   0x02: Polarity Inversion (R/W) - inverts input readings
     //   0x03: Configuration (R/W) - sets pin direction (1=input, 0=output)
 
+    // Set the Output Port Register to 0 (All Ports OFF) FIRST
+    // This ensures that when the pins switch to outputs, they drive LOW immediately.
+    if (!writeI2CRegister(addr, 0x01, 0x00)) {
+       return false; 
+    }
+
     // Set Configuration Register (all pins as outputs) - with retry
     if (!writeI2CRegister(addr, 0x03, 0x00)) {
       return false;  // Failed to configure
@@ -465,13 +482,13 @@ public:
 
     // Set Output Control Register with initial state
     // Bit 0: Current limit control (1=low power, 0=high power) - controls MT9700 SET pin resistor
+    // Bit 1: USB-C VBUS Path (1=connected, 0=isolated) - links USB-C VBUS to main 5V rail
+    //        This path allows the USB-C port to supply the hub or be powered by it.
+    //        WARNING: Avoid cross-connecting 5V from header and USB-C.
     // Bit 3: LED control (1=on, 0=off) - default to on for visibility
     // Bits 4-7: Port control (1=on, 0=off) - individual port enable/disable
-    hubStates[hubIndex] = 0x08;  // Bit 0 clear for high power, bit 3 set for LED on
+    hubStates[hubIndex] = 0x08;  // Bit 0 clear for high power, bit 1 isolated, bit 3 set for LED on
     writeI2CRegister(addr, 0x01, hubStates[hubIndex]);  // with retry
-
-    // Port 4 defaults to on for some reason, make sure it's off
-    setPort(hubIndex, 3, false);  // Port 4 is index 3
 
     return true;
   }
@@ -489,6 +506,24 @@ public:
       hubStates[hubIndex] &= ~(1 << portBit);
     }
     updateHub(hubIndex);
+  }
+
+  // Set USB-C VBUS Path (Bit 1)
+  void setVBUSPath(uint8_t hubIndex, bool on) {
+    if (hubIndex >= MAX_HUBS || !connectedHubs[hubIndex]) return;
+
+    if (on) {
+      hubStates[hubIndex] |= 0x02;  // Set bit 1 (Enabled)
+    } else {
+      hubStates[hubIndex] &= ~0x02;  // Clear bit 1 (Isolated)
+    }
+    updateHub(hubIndex);
+  }
+
+  // Get USB-C VBUS Path state (Bit 1)
+  bool getHubVBUSPathState(uint8_t hubIndex) {
+    if (hubIndex >= MAX_HUBS) return false;
+    return (hubStates[hubIndex] & 0x02) != 0;  // Bit 1
   }
 
   // Set port by absolute port number (1-N where N = number of discovered ports)
@@ -652,6 +687,7 @@ public:
 
         // Add hub-level LED and power status
         hub["led"] = getHubLEDState(hubIdx);
+        hub["usbc"] = getHubVBUSPathState(hubIdx);
         hub["power"] = getHubPowerHigh(hubIdx) ? "high" : "low";
 
         // Find all sequential ports that map to this hub
@@ -1718,6 +1754,20 @@ private:
       return;
     }
 
+    // Handle USB-C control
+    if (cmd.containsKey("usbc")) {
+      bool usbcOn = cmd["usbc"].as<bool>();
+      hub->setVBUSPath(hubIndex, usbcOn);
+
+      // Log with [hub:] format
+      char detail[16];
+      snprintf(detail, sizeof(detail), "[%d:]", hubNum);
+      logger->log(usbcOn ? "hub_vbus_path_on" : "hub_vbus_path_off", 0, detail);
+
+      sendOK(usbcOn ? "USB-C VBUS Path enabled" : "USB-C VBUS Path isolated");
+      return;
+    }
+
     // Handle power control
     if (cmd.containsKey("power")) {
       const char* power = cmd["power"];
@@ -1753,6 +1803,7 @@ private:
       response["hub"] = hubNum;
       response["state"] = state;
       response["led"] = hub->getHubLEDState(hubIndex);
+      response["usbc"] = hub->getHubVBUSPathState(hubIndex);
       response["power"] = hub->getHubPowerHigh(hubIndex) ? "high" : "low";
       serializeJson(response, Serial);
       Serial.println();

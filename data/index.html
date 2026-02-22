@@ -30,6 +30,19 @@
             padding: 20px 30px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             margin-bottom: 20px;
+            transition: background 0.5s ease;
+        }
+
+        header.emergency {
+            background: #ffebee;
+            border: 2px solid #f44336;
+            animation: pulse-red 1s infinite;
+        }
+
+        @keyframes pulse-red {
+            0% { box-shadow: 0 4px 6px rgba(244, 67, 54, 0.4); }
+            50% { box-shadow: 0 4px 20px rgba(244, 67, 54, 0.8); }
+            100% { box-shadow: 0 4px 6px rgba(244, 67, 54, 0.4); }
         }
 
         h1 {
@@ -733,6 +746,13 @@
             // Handle real-time log entry
             if (data.type === 'log_entry') {
                 addLogEntryFromServer(data);
+                
+                // Visual feedback for emergency stop
+                if (data.action && data.action.includes('emergency_stop')) {
+                    const header = document.querySelector('header');
+                    header.classList.add('emergency');
+                    setTimeout(() => header.classList.remove('emergency'), 5000);
+                }
             }
 
             // Handle port names from status response

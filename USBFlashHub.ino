@@ -2996,6 +2996,8 @@ void loop() {
     hubController.allOff();
     relayController.setState(false); // Turn off external 5V relay
     pinController.setReset(true);
+    activityLogger.log("physical_emergency_stop");
+    broadcastStatus();
     ledController.errorPattern();
   }
 

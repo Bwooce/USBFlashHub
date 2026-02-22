@@ -114,6 +114,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <LittleFS.h>
+#include <Update.h>
 
 // RGB LED support for S3-Zero
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -129,6 +130,8 @@
 #define USB_PRODUCT_NAME      "Hub Controller"
 #define USB_SERIAL_PREFIX     "HUBCTL_"  // Will append MAC address for uniqueness
 
+// Global state
+volatile bool isUpdating = false;
 
 // ============================================
 // Board Detection and Pin Assignments
@@ -2186,6 +2189,53 @@ void broadcastLogToWebSocket(const struct LogEntry& entry) {
 // ============================================
 // WEB SERVER HANDLERS
 // ============================================
+void handleWebUpdate() {
+  const char* update_html = 
+    "<form method='POST' action='/update' enctype='multipart/form-data'>"
+    "<h1>USBFlashHub OTA Update</h1>"
+    "<input type='file' name='update' accept='.bin'><br><br>"
+    "<input type='submit' value='Start Update'>"
+    "</form>";
+  webServer.send(200, "text/html", update_html);
+}
+
+void handleWebUpdatePost() {
+  webServer.sendHeader("Connection", "close");
+  webServer.send(200, "text/plain", (Update.hasError()) ? "Update Failed" : "Update Success. Rebooting...");
+  activityLogger.log("ota_update_complete");
+  delay(1000);
+  ESP.restart();
+}
+
+void handleWebUpdateUpload() {
+  HTTPUpload& upload = webServer.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    isUpdating = true; // Stop other loop processing
+    activityLogger.log("ota_update_start", 0, upload.filename.c_str());
+    Serial.printf("Update Start: %s\n", upload.filename.c_str());
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      Serial.printf("Update Success: %u bytes\n", upload.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+  }
+}
+
+void handleWebReset() {
+  webServer.send(200, "text/plain", "Resetting device...");
+  activityLogger.log("remote_reset");
+  delay(1000);
+  ESP.restart();
+}
+
 void handleWebRoot() {
   Serial.println(F("HTTP: Root page requested"));
   if (LittleFS.exists("/index.html")) {
@@ -2873,6 +2923,9 @@ void setup() {
       webServer.on("/", handleWebRoot);
       webServer.on("/status", handleWebStatus);
       webServer.on("/version", handleWebVersion);
+      webServer.on("/reset", handleWebReset);
+      webServer.on("/update", HTTP_GET, handleWebUpdate);
+      webServer.on("/update", HTTP_POST, handleWebUpdatePost, handleWebUpdateUpload);
       webServer.onNotFound(handleWebNotFound);
       webServer.begin();
       Serial.print(F("Web server started on port 80 at http://"));
@@ -2901,6 +2954,13 @@ static const char* lastOperation = "init";
 void loop() {
   // Feed the watchdog
   esp_task_wdt_reset();
+
+  // Handle web server updates (blocks other processing)
+  if (isUpdating) {
+    webServer.handleClient();
+    delay(1);
+    return;
+  }
 
   // Track loop timing for diagnostics
   uint32_t loopStart = millis();

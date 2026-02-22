@@ -100,6 +100,11 @@ python3 upload_data.py
 ### Web Interface
 Connect to `http://usbhub.local` (or device IP address) for browser-based control.
 
+**Special Web Endpoints:**
+- `/status` - JSON system status.
+- `/reset` - Remotely restart the device.
+- `/update` - Web-based firmware update (OTA). When an update starts, all background processing (I2C, WebSockets, Serial) is suspended until the device reboots.
+
 ### Python Agents
 
 **Turn on all ports:**

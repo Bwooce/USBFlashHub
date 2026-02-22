@@ -222,6 +222,13 @@ python3 -c "import websocket,json,time; ws=websocket.WebSocket(); ws.connect('ws
 {"cmd":"help"}                              // Command reference
 ```
 
+### Web Endpoints
+- `GET /` - Web UI
+- `GET /status` - JSON status
+- `GET /reset` - Device reset
+- `GET /update` - Firmware upload form
+- `POST /update` - Firmware upload handler (suspends loop processing)
+
 ## Programming Different Boards
 
 Since boot/reset pin meanings vary by target:

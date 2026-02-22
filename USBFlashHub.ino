@@ -2887,7 +2887,8 @@ void setup() {
   // Setup emergency stop button
   pinMode(EMERGENCY_BTN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(EMERGENCY_BTN), emergencyStopISR, FALLING);
-  Serial.println(F("Emergency stop on GPIO0 (BOOT button)"));
+  Serial.print(F("Emergency stop on GPIO"));
+  Serial.println(EMERGENCY_BTN);
 
   Serial.println(F("\nReady for commands"));
   Serial.println(F("Type {\"cmd\":\"help\"} for command list"));

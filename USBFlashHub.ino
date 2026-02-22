@@ -1994,37 +1994,40 @@ public:
     response["status"] = "ok";
     response["device"] = "USBFlashHub";
     response["version"] = "2.0";
-    response["uptime"] = millis();
-    response["commands"] = commandCount;
-    response["restart_reason"] = restartReason;
-    response["restart_time"] = restartTime;
+
+    // Add system info (nested for consistency)
+    JsonObject system = response.createNestedObject("system");
+    system["uptime"] = millis();
+    system["commands"] = commandCount;
+    system["restart_reason"] = restartReason;
+    system["restart_time"] = restartTime;
 
     // ESP32 system status - Regular heap (SRAM)
-    response["free_heap"] = ESP.getFreeHeap();
-    response["heap_size"] = ESP.getHeapSize();
-    response["min_free_heap"] = ESP.getMinFreeHeap();
+    system["free_heap"] = ESP.getFreeHeap();
+    system["heap_size"] = ESP.getHeapSize();
+    system["min_free_heap"] = ESP.getMinFreeHeap();
 
     // PSRAM stats (if available)
     if (ESP.getPsramSize() > 0) {
-      response["psram_size"] = ESP.getPsramSize();
-      response["free_psram"] = ESP.getFreePsram();
-      response["min_free_psram"] = ESP.getMinFreePsram();
+      system["psram_size"] = ESP.getPsramSize();
+      system["free_psram"] = ESP.getFreePsram();
+      system["min_free_psram"] = ESP.getMinFreePsram();
     }
 
-    response["cpu_freq"] = ESP.getCpuFreqMHz();
-    response["flash_size"] = ESP.getFlashChipSize();
-    response["sdk_version"] = ESP.getSdkVersion();
+    system["cpu_freq"] = ESP.getCpuFreqMHz();
+    system["flash_size"] = ESP.getFlashChipSize();
+    system["sdk_version"] = ESP.getSdkVersion();
 
     #ifdef CONFIG_IDF_TARGET_ESP32S3
       // ESP32-S3 has internal temperature sensor
-      response["temperature"] = temperatureRead();
+      system["temperature"] = temperatureRead();
     #endif
 
     // WiFi status
     if (WiFi.status() == WL_CONNECTED) {
-      response["wifi_ssid"] = WiFi.SSID();
-      response["wifi_rssi"] = WiFi.RSSI();
-      response["wifi_channel"] = WiFi.channel();
+      system["wifi_ssid"] = WiFi.SSID();
+      system["wifi_rssi"] = WiFi.RSSI();
+      system["wifi_channel"] = WiFi.channel();
     }
 
     // I2C health metrics
@@ -2362,49 +2365,47 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
         // Special handling for status command - send full response
         const char* action = cmd["cmd"];
         if (strcmp(action, "status") == 0) {
-          StaticJsonDocument<4096> status;  // Increased for 32 ports + system info
+          StaticJsonDocument<4096> status;
           status["status"] = "ok";
           status["uptime"] = millis();
 
-          // Add hubs info (getStatus creates the "hubs" array)
+          // Add hubs info
           hubController.getStatus(status);
+
+          // Add system info (nested for UI consistency)
+          JsonObject system = status.createNestedObject("system");
+          system["uptime"] = millis();
+          system["ip"] = WiFi.localIP().toString();
+          system["restart_reason"] = restartReason;
+          system["restart_time"] = restartTime;
+          system["free_heap"] = ESP.getFreeHeap();
+          system["heap_size"] = ESP.getHeapSize();
+          system["min_free_heap"] = ESP.getMinFreeHeap();
+
+          if (ESP.getPsramSize() > 0) {
+            system["psram_size"] = ESP.getPsramSize();
+            system["free_psram"] = ESP.getFreePsram();
+            system["min_free_psram"] = ESP.getMinFreePsram();
+          }
+
+          system["cpu_freq"] = ESP.getCpuFreqMHz();
+          system["flash_size"] = ESP.getFlashChipSize();
+          system["sdk_version"] = ESP.getSdkVersion();
+
+          #ifdef CONFIG_IDF_TARGET_ESP32S3
+            system["temperature"] = temperatureRead();
+          #endif
+
+          if (WiFi.status() == WL_CONNECTED) {
+            system["wifi_ssid"] = WiFi.SSID();
+            system["wifi_rssi"] = WiFi.RSSI();
+            system["wifi_channel"] = WiFi.channel();
+          }
 
           // Add network info
           JsonObject network = status.createNestedObject("network");
           network["ip"] = WiFi.localIP().toString();
           network["connected"] = true;
-
-          // Add restart info
-          status["restart_reason"] = restartReason;
-          status["restart_time"] = restartTime;
-
-          // ESP32 system status - Regular heap (SRAM)
-          status["free_heap"] = ESP.getFreeHeap();
-          status["heap_size"] = ESP.getHeapSize();
-          status["min_free_heap"] = ESP.getMinFreeHeap();
-
-          // PSRAM stats (if available)
-          if (ESP.getPsramSize() > 0) {
-            status["psram_size"] = ESP.getPsramSize();
-            status["free_psram"] = ESP.getFreePsram();
-            status["min_free_psram"] = ESP.getMinFreePsram();
-          }
-
-          status["cpu_freq"] = ESP.getCpuFreqMHz();
-          status["flash_size"] = ESP.getFlashChipSize();
-          status["sdk_version"] = ESP.getSdkVersion();
-
-          #ifdef CONFIG_IDF_TARGET_ESP32S3
-            // ESP32-S3 has internal temperature sensor
-            status["temperature"] = temperatureRead();
-          #endif
-
-          // WiFi status
-          if (WiFi.status() == WL_CONNECTED) {
-            status["wifi_ssid"] = WiFi.SSID();
-            status["wifi_rssi"] = WiFi.RSSI();
-            status["wifi_channel"] = WiFi.channel();
-          }
 
           // I2C health metrics
           JsonObject i2c = status.createNestedObject("i2c");

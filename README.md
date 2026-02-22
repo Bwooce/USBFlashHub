@@ -211,35 +211,34 @@ The hub supports three power levels: **off**, **low**, and **high**.
 - For resistor selection and schematic details, see [Jim Heaney's hardware repository](https://github.com/JimHeaney/i2c-usb-hub)
 
 ## Pin Assignments
-
-### Primary Reference Board: ESP32-S2 (Wemos S2 Mini)
-The firmware is optimized for the physical **Outer Left Header** (on the side of the USB-C port) of the Lolin S2 Mini v1.0.0. This allows for a strictly contiguous physical block for wiring to a single connector.
-
-| Physical Label | GPIO | Function |
-| :--- | :--- | :--- |
-| **VBUS** | Power | 5V DC Input |
-| **GND** | Ground | Ground |
-| **16** | 16 | **I2C SDA** |
-| **18** | 18 | **I2C SCL** |
-| **33** | 33 | **BOOT (Target)** |
-| **35** | 35 | **RESET (Target)** |
-| **37** | 37 | **Relay Control** |
-| **39** | 39 | **Emergency Stop** |
-
-*Onboard Activity LED: GPIO 15 (Blue).*
-
-### Device Programming Functionality
-The Hub uses dedicated pins to control the bootloader state of target microcontrollers connected to its ports.
-
-- **STM32 Targets**: Set `BOOT` HIGH and pulse `RESET` to enter System Bootloader (DFU).
-- **ESP32 Targets**: Set `BOOT` LOW and pulse `RESET` to enter Serial Bootloader.
-- **ESP8266 Targets**: Same as ESP32 (GPIO0 LOW).
-
-These can be automated via the provided Python agents or controlled manually via the web UI.
-
-### Other Boards
-Pin assignments vary by board variant - see [CLAUDE.md](CLAUDE.md) for full mappings for ESP32-S3, ESP32-C3, and original ESP32.
-
+ 
++### Primary Reference Board: ESP32-S2 (Wemos S2 Mini)
++The firmware is optimized for the physical **Outer Left Header** (on the side of the USB-C port) of the Lolin S2 Mini v1.0.0. This allows for a strictly contiguous physical block for wiring to a single connector.
++
++| Physical Label | GPIO | Function |
++| :--- | :--- | :--- |
++| **VBUS** | Power | 5V DC Input |
++| **GND** | Ground | Ground |
++| **16** | 16 | **I2C SDA** |
++| **18** | 18 | **I2C SCL** |
++| **33** | 33 | **BOOT (Target)** |
++| **35** | 35 | **RESET (Target)** |
++| **37** | 37 | **Relay Control** |
++| **39** | 39 | **Emergency Stop** |
++
++*Onboard Activity LED: GPIO 15 (Blue).*
++
++### Device Programming Functionality
++The Hub uses dedicated pins to control the bootloader state of target microcontrollers connected to its ports.
++
++- **STM32 Targets**: Set `BOOT` HIGH and pulse `RESET` to enter System Bootloader (DFU).
++- **ESP32 Targets**: Set `BOOT` LOW and pulse `RESET` to enter Serial Bootloader.
++- **ESP8266 Targets**: Same as ESP32 (GPIO0 LOW).
++
++These can be automated via the provided Python agents or controlled manually via the web UI.
++
++### Other Boards
+ Varies by board - see [CLAUDE.md](CLAUDE.md) for complete pin mappings.
 ## Python Automation
 
 The `agents/` directory contains:

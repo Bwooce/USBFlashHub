@@ -69,7 +69,7 @@ EMERGENCY_BTN: GPIO 39
 STATUS_LED: GPIO 6
 ACTIVITY_LED: GPIO 15 (onboard LED)
 ```
-*Note: Optimized for the physical Outer Left Header: [VBUS] [GND] [16] [18] [33] [35] [37] [39].*
+*Note: Optimized for the physical row sequence: [VBUS] [GND] [16] [18] [33] [35] [37] [39].*
 
 **ESP32-C3 (C3 Zero/Mini):**
 ```

@@ -142,9 +142,8 @@ volatile bool isUpdating = false;
   #define BOARD_TYPE "ESP32-S2"
   #pragma message("Compiling for ESP32-S2")
   // ESP32-S2 Mini / Wemos S2 Mini Pin Assignments
-  // Optimized for physical Outer Left Row header (starting from USB port side)
-  // Mapping: [VBUS] [GND] [16] [18] [33] [35] [37] [39]
-  // This provides a strictly contiguous physical block for wiring.
+  // Optimized for the physical row on the left side (USB-C at top)
+  // Physical Order (Bottom-to-Top): [VBUS] [GND] [16] [18] [33] [35] [37] [39]
   
   // I2C for USB Hub control
   #define I2C_SDA 16
@@ -152,13 +151,14 @@ volatile bool isUpdating = false;
   // Programming control pins
   #define BOOT_PIN 33
   #define RESET_PIN 35  // Active LOW
+  // External 5V relay control (High Level Trigger SSR)
+  #define RELAY_PIN 37
+  // Emergency stop (optional)
+  #define EMERGENCY_BTN 39
+  
   // Status/Activity LEDs
   #define STATUS_LED 6     // Available on right row or internal
   #define ACTIVITY_LED 15  // Onboard Blue LED
-  // Emergency stop (optional)
-  #define EMERGENCY_BTN 39 // Physical pin 39 on outer left header
-  // External 5V relay control (High Level Trigger SSR)
-  #define RELAY_PIN 37
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
   #define BOARD_TYPE "ESP32-C3"
@@ -1636,6 +1636,11 @@ public:
     }
     else if (strcmp(action, "ping") == 0) {
       sendOK("pong");
+    }
+    else if (strcmp(action, "reboot") == 0) {
+      sendOK("Rebooting hub controller...");
+      delay(500);
+      ESP.restart();
     }
     else if (strcmp(action, "help") == 0) {
       printHelp();

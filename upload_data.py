@@ -11,7 +11,7 @@ import tempfile
 import shutil
 
 # Configuration
-BOARD = "esp32:esp32:esp32s3"  # Change this to match your board
+BOARD = "esp32:esp32:esp32s2"  # Change this to match your board
 UPLOAD_SPEED = "921600"
 PARTITION_SCHEME = "default"  # or "minimal" for more space
 
@@ -74,7 +74,7 @@ def upload_image(image_file, port):
         print("Error: esptool not found!")
         return False
 
-    # Upload command for ESP32-S3
+    # Upload command for ESP32-S2
     # LittleFS partition typically starts at 0x290000 for 4MB flash
     # Check if esptool is binary or python script
     if esptool.endswith(".py"):
@@ -83,7 +83,7 @@ def upload_image(image_file, port):
         cmd = [esptool]
 
     cmd.extend([
-        "--chip", "esp32s3",
+        "--chip", "esp32s2",
         "--port", port,
         "--baud", UPLOAD_SPEED,
         "write_flash",

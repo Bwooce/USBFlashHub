@@ -60,15 +60,16 @@ Hub 8 (0x1F): Ports 29-32
 
 **ESP32-S2 (Wemos S2 Mini):**
 ```
-I2C_SDA: GPIO 33
-I2C_SCL: GPIO 35
-BOOT_PIN: GPIO 11
-RESET_PIN: GPIO 12 (active LOW)
-STATUS_LED: GPIO 15
-ACTIVITY_LED: GPIO 13
-EMERGENCY_BTN: GPIO 0
-RELAY_PIN: GPIO 5 (external 5V control)
+I2C_SDA: GPIO 16
+I2C_SCL: GPIO 18
+BOOT_PIN: GPIO 33
+RESET_PIN: GPIO 35 (active LOW)
+RELAY_PIN: GPIO 37 (external 5V control)
+EMERGENCY_BTN: GPIO 39
+STATUS_LED: GPIO 6
+ACTIVITY_LED: GPIO 15 (onboard LED)
 ```
+*Note: Optimized for the physical Outer Left Header: [VBUS] [GND] [16] [18] [33] [35] [37] [39].*
 
 **ESP32-C3 (C3 Zero/Mini):**
 ```

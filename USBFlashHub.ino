@@ -2994,6 +2994,7 @@ void loop() {
     emergencyStartTime = millis();
     Serial.println(F("\n!!! EMERGENCY STOP !!!"));
     hubController.allOff();
+    relayController.setState(false); // Turn off external 5V relay
     pinController.setReset(true);
     ledController.errorPattern();
   }

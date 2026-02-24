@@ -115,6 +115,7 @@
 #include <WebSocketsServer.h>
 #include <LittleFS.h>
 #include <Update.h>
+#include <esp_core_dump.h>
 
 // RGB LED support for S3-Zero
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -146,15 +147,15 @@ volatile bool isUpdating = false;
   // Physical Order (Bottom-to-Top): [VBUS] [GND] [16] [18] [33] [35] [37] [39]
   
   // I2C for USB Hub control
-  #define I2C_SDA 16
-  #define I2C_SCL 18
+  #define I2C_SDA 18
+  #define I2C_SCL 33
   // Programming control pins
-  #define BOOT_PIN 33
+  #define BOOT_PIN 37
   #define RESET_PIN 35  // Active LOW
   // External 5V relay control (High Level Trigger SSR)
-  #define RELAY_PIN 37
+  #define RELAY_PIN 39
   // Emergency stop (optional)
-  #define EMERGENCY_BTN 39
+  #define EMERGENCY_BTN 16
   
   // Status/Activity LEDs
   #define STATUS_LED 6     // Available on right row or internal
@@ -369,58 +370,65 @@ public:
     Serial.println(I2C_SDA);
     Serial.print(F("I2C SCL Pin: GPIO"));
     Serial.println(I2C_SCL);
-    Serial.println(F("Scanning I2C bus for all devices..."));
-
-    // First do a complete I2C bus scan
+    
+    // Attempt scan with retries
+    uint8_t scanAttempts = 3;
     uint8_t deviceCount = 0;
-    for (uint8_t addr = 1; addr < 127; addr++) {
-      wire->beginTransmission(addr);
-      uint8_t error = wire->endTransmission();
-      if (error == 0) {
-        Serial.print(F("  Found device at 0x"));
-        if (addr < 16) Serial.print("0");
-        Serial.println(addr, HEX);
-        deviceCount++;
-      }
-    }
-    Serial.print(F("Total I2C devices found: "));
-    Serial.println(deviceCount);
-
-    Serial.println(F("----------------------------------------"));
-    Serial.println(F("Checking for USB hubs at expected addresses:"));
-
-    for (uint8_t i = 0; i < MAX_HUBS; i++) {
-      Serial.print(F("  Testing hub "));
-      Serial.print(i + 1);
-      Serial.print(F(" at 0x"));
-      Serial.print(HUB_ADDRESSES[i], HEX);
-      Serial.print(F("... "));
-
-      // Test if hub exists
-      wire->beginTransmission(HUB_ADDRESSES[i]);
-      uint8_t error = wire->endTransmission();
-
-      if (error == 0) {
-        // Initialize the hub with proper configuration
-        if (initializeHub(i)) {
-          connectedHubs[i] = 1;
-          numConnected++;
-          Serial.print(F("FOUND and initialized! (ports "));
-          Serial.print(i * PORTS_PER_HUB + 1);
-          Serial.print(F("-"));
-          Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
-          Serial.println(F(")"));
-        } else {
-          if (Serial) Serial.println(F("Found but init failed!"));
-          // Log to activity log
-          char detail[16];
-          snprintf(detail, sizeof(detail), "0x%02X", HUB_ADDRESSES[i]);
-          logError("hub_init", i + 1, detail);
+    
+    while (scanAttempts > 0 && numConnected == 0) {
+      Serial.print(F("Scanning I2C bus (attempt "));
+      Serial.print(4 - scanAttempts);
+      Serial.println(F(")..."));
+      
+      deviceCount = 0;
+      for (uint8_t addr = 1; addr < 127; addr++) {
+        // Feed watchdog periodically during scan
+        if (addr % 20 == 0) esp_task_wdt_reset();
+        
+        wire->beginTransmission(addr);
+        uint8_t error = wire->endTransmission();
+        if (error == 0) {
+          Serial.print(F("  Found device at 0x"));
+          if (addr < 16) Serial.print("0");
+          Serial.println(addr, HEX);
+          deviceCount++;
         }
-      } else {
-        Serial.print(F("Not found (error="));
-        Serial.print(error);
-        Serial.println(F(")"));
+        delay(1); // Tiny delay between probes
+      }
+      
+      Serial.println(F("----------------------------------------"));
+      Serial.println(F("Checking for USB hubs at expected addresses:"));
+
+      for (uint8_t i = 0; i < MAX_HUBS; i++) {
+        // Test if hub exists
+        wire->beginTransmission(HUB_ADDRESSES[i]);
+        uint8_t error = wire->endTransmission();
+
+        if (error == 0) {
+          // Initialize the hub with proper configuration
+          if (initializeHub(i)) {
+            connectedHubs[i] = 1;
+            numConnected++;
+            Serial.print(F("  Hub "));
+            Serial.print(i + 1);
+            Serial.print(F(" at 0x"));
+            Serial.print(HUB_ADDRESSES[i], HEX);
+            Serial.print(F(": FOUND (ports "));
+            Serial.print(i * PORTS_PER_HUB + 1);
+            Serial.print(F("-"));
+            Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
+            Serial.println(F(")"));
+          }
+        }
+      }
+      
+      if (numConnected == 0) {
+        scanAttempts--;
+        if (scanAttempts > 0) {
+          Serial.println(F("No hubs found, retrying in 500ms..."));
+          delay(500);
+          esp_task_wdt_reset();
+        }
       }
     }
 
@@ -2018,8 +2026,8 @@ public:
     system["flash_size"] = ESP.getFlashChipSize();
     system["sdk_version"] = ESP.getSdkVersion();
 
-    #ifdef CONFIG_IDF_TARGET_ESP32S3
-      // ESP32-S3 has internal temperature sensor
+    #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+      // ESP32-S3 and S2 have internal temperature sensors
       system["temperature"] = temperatureRead();
     #endif
 
@@ -2219,12 +2227,27 @@ void handleWebUpdateUpload() {
   HTTPUpload& upload = webServer.upload();
   if (upload.status == UPLOAD_FILE_START) {
     isUpdating = true; // Stop other loop processing
+    
+    // Disable emergency stop interrupt during update to prevent noise interference
+    detachInterrupt(digitalPinToInterrupt(EMERGENCY_BTN));
+    
     activityLogger.log("ota_update_start", 0, upload.filename.c_str());
     Serial.printf("Update Start: %s\n", upload.filename.c_str());
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+    
+    // Use Content-Length if available for more reliable allocation
+    size_t updateSize = UPDATE_SIZE_UNKNOWN;
+    if (webServer.hasHeader("Content-Length")) {
+        updateSize = webServer.header("Content-Length").toInt();
+        // Adjust for multipart form overhead (rough estimate, Update.begin handles it)
+    }
+    
+    if (!Update.begin(updateSize)) {
       Update.printError(Serial);
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
+    // Feed watchdog before slow flash write
+    esp_task_wdt_reset();
+    
     if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
       Update.printError(Serial);
     }
@@ -2233,6 +2256,8 @@ void handleWebUpdateUpload() {
       Serial.printf("Update Success: %u bytes\n", upload.totalSize);
     } else {
       Update.printError(Serial);
+      // Re-enable interrupt if update failed (though we usually reboot anyway)
+      attachInterrupt(digitalPinToInterrupt(EMERGENCY_BTN), emergencyStopISR, FALLING);
     }
   }
 }
@@ -2282,32 +2307,47 @@ void handleWebNotFound() {
 
 void handleWebStatus() {
   Serial.println(F("HTTP: Status API requested"));
-  StaticJsonDocument<2048> doc;
+  
+  // Use a larger buffer for the full status including hubs and ports
+  DynamicJsonDocument doc(4096);
   doc["status"] = "ok";
   doc["uptime"] = millis();
+  doc["systemname"] = configManager.getSystemName();
 
-  // Add port states (sequential mapping)
-  JsonObject ports = doc.createNestedObject("ports");
-  for (uint8_t i = 1; i <= hubController.getTotalPorts(); i++) {
-    uint8_t hubIndex, portIndex;
-    if (hubController.getHubAndPort(i, hubIndex, portIndex)) {
-      uint8_t state = hubController.getPortPower(i);
-      if (state == POWER_OFF) ports[String(i)] = "off";
-      else if (state == POWER_LOW) ports[String(i)] = "low";
-      else if (state == POWER_HIGH) ports[String(i)] = "high";
-    }
-  }
+  // Add hub and port information (using existing logic)
+  hubController.getStatus(doc);
 
-  // Add system info
+  // Add system info (nested for consistency)
   JsonObject system = doc.createNestedObject("system");
+  system["uptime"] = millis();
   system["ip"] = WiFi.localIP().toString();
   system["rssi"] = WiFi.RSSI();
   system["heap"] = ESP.getFreeHeap();
+  system["restart_reason"] = restartReason;
+  system["restart_time"] = restartTime;
+  system["is_updating"] = isUpdating;
+  
+  #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+    system["temperature"] = temperatureRead();
+  #endif
+  
+  // Collect headers for OTA debugging if they were present
+  if (webServer.hasHeader("Content-Length")) {
+    system["last_cl"] = webServer.header("Content-Length");
+  }
 
   // Add pin states
   JsonObject pins = doc.createNestedObject("pins");
-  pins["boot"] = digitalRead(BOOT_PIN);
-  pins["reset"] = digitalRead(RESET_PIN);
+  pins["boot"] = pinController.getBootState() ? "HIGH" : "LOW";
+  pins["reset"] = pinController.getResetState() ? "asserted" : "released";
+
+  // Add port names
+  portNameManager.toJson(doc);
+
+  // Add relay state
+  JsonObject relay = doc.createNestedObject("relay");
+  relay["state"] = relayController.getState();
+  relay["default"] = relayController.getDefaultState();
 
   String response;
   serializeJson(doc, response);
@@ -2392,7 +2432,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           system["flash_size"] = ESP.getFlashChipSize();
           system["sdk_version"] = ESP.getSdkVersion();
 
-          #ifdef CONFIG_IDF_TARGET_ESP32S3
+          #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
             system["temperature"] = temperatureRead();
           #endif
 
@@ -2600,8 +2640,8 @@ void broadcastStatus() {
   system["flash_size"] = ESP.getFlashChipSize();
   system["sdk_version"] = ESP.getSdkVersion();
 
-  #ifdef CONFIG_IDF_TARGET_ESP32S3
-    // ESP32-S3 has internal temperature sensor
+  #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+    // ESP32-S3 and S2 have internal temperature sensors
     system["temperature"] = temperatureRead();
   #endif
 
@@ -2685,8 +2725,8 @@ void logSystemStats() {
     }
   }
 
-  // Temperature if available (ESP32-S3)
-  #ifdef CONFIG_IDF_TARGET_ESP32S3
+  // Temperature if available (ESP32-S3/S2)
+  #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
     float temp = temperatureRead();
     offset += snprintf(stats + offset, sizeof(stats) - offset, " temp:%.1fC", temp);
   #endif
@@ -2808,7 +2848,24 @@ void setup() {
 
   // Check for crash/panic info
   if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
-    Serial.println(F("\n*** WARNING: Previous session ended with crash/watchdog reset! ***\n"));
+    Serial.println(F("\n*** WARNING: Previous session ended with crash/watchdog reset! ***"));
+    
+    // Check if core dump exists
+    esp_core_dump_summary_t summary;
+    if (esp_core_dump_get_summary(&summary) == ESP_OK) {
+        Serial.println(F("Core dump found!"));
+        Serial.printf("  Exception cause: %d\n", summary.ex_info.exc_cause);
+        Serial.printf("  PC: 0x%08x, Task: %s\n", summary.exc_pc, summary.exc_task);
+        Serial.printf("  Core dump version: %d\n", summary.core_dump_version);
+        
+        char detail[64];
+        snprintf(detail, sizeof(detail), "cause:%d PC:0x%08x task:%s", 
+                 summary.ex_info.exc_cause, summary.exc_pc, summary.exc_task);
+        activityLogger.log("coredump_found", 0, detail);
+    } else {
+        Serial.println(F("No core dump summary available."));
+    }
+    Serial.println();
   }
 
   // Initialize watchdog timer
@@ -2847,6 +2904,11 @@ void setup() {
   activityLogger.log("system_restart", 0, restartReason.c_str());
 
   esp_task_wdt_reset();  // Feed watchdog
+
+  // Give external components (like I2C hubs) time to power up if controlled by relay
+  Serial.println(F("Stabilizing power..."));
+  delay(1000);
+  esp_task_wdt_reset();
 
   // Initialize components
   ledController.begin();
@@ -2927,6 +2989,12 @@ void setup() {
 
       // Setup web server routes
       Serial.println(F("Configuring web server routes..."));
+      
+      // Register headers to be collected
+      const char *headerkeys[] = {"Content-Length", "Connection"};
+      size_t headerkeyssize = sizeof(headerkeys) / sizeof(char *);
+      webServer.collectHeaders(headerkeys, headerkeyssize);
+      
       webServer.on("/", handleWebRoot);
       webServer.on("/status", handleWebStatus);
       webServer.on("/version", handleWebVersion);
@@ -2964,6 +3032,7 @@ void loop() {
 
   // Handle web server updates (blocks other processing)
   if (isUpdating) {
+    wifiManager.loop(); // Keep WiFi alive
     webServer.handleClient();
     delay(1);
     return;

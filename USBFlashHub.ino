@@ -230,7 +230,7 @@ volatile bool isUpdating = false;
 #define DAYLIGHT_OFFSET_SEC 0
 
 // Timing Configuration
-#define WDT_TIMEOUT         10    // 10 seconds watchdog timeout
+#define WDT_TIMEOUT         30    // 30 seconds watchdog timeout
 #define ACTIVITY_FLASH_MS   50    // Activity LED flash duration
 #define ERROR_FLASH_MS      100   // Error pattern flash duration
 #define RESET_PULSE_MS      100   // Default reset pulse duration
@@ -334,6 +334,164 @@ struct LogEntry {
 // Forward declare global error logging function
 void logError(const char* errorType, uint8_t target, const char* detail);
 
+class ActivityLogger {
+private:
+  static const uint16_t MAX_ENTRIES_RAM = 100;      // Regular RAM limit
+  static const uint16_t MAX_ENTRIES_PSRAM = 10000;  // PSRAM limit (~1.3MB, leaves room for other uses)
+
+  uint16_t MAX_ENTRIES;  // Actual max entries (set at init)
+
+  struct LogHeader {
+    uint32_t magic;
+    uint16_t writeIndex;
+    uint16_t count;
+  };
+
+  static const uint32_t MAGIC_MARKER = 0xDEADBEEF;
+  LogEntry* entries;
+  LogHeader* header;
+  bool usePSRAM;
+
+public:
+  ActivityLogger() : usePSRAM(false), entries(nullptr), header(nullptr), MAX_ENTRIES(MAX_ENTRIES_RAM) {}
+
+  void begin() {
+    // Note: PSRAM is volatile and loses contents on ANY reset (not just power loss)
+    // It's NOT persistent across reboots. Only deep sleep preserves PSRAM.
+    // For true persistence, we'd need to use flash storage (Preferences/LittleFS)
+
+    // Free existing allocations if begin() called multiple times
+    if (entries) {
+      if (usePSRAM) {
+        heap_caps_free(entries);
+        heap_caps_free(header);
+      } else {
+        delete[] entries;
+        delete header;
+      }
+      entries = nullptr;
+      header = nullptr;
+    }
+
+    // Check for PSRAM and allocate buffer
+    if (psramFound()) {
+      // Calculate max entries based on available PSRAM (use 75% to leave headroom)
+      size_t psramSize = ESP.getPsramSize();
+      size_t maxPsramForLog = (psramSize * 75) / 100;
+      uint16_t calculatedEntries = maxPsramForLog / sizeof(LogEntry);
+
+      // Cap at MAX_ENTRIES_PSRAM or calculated size, whichever is smaller
+      MAX_ENTRIES = (calculatedEntries < MAX_ENTRIES_PSRAM) ? calculatedEntries : MAX_ENTRIES_PSRAM;
+
+      header = (LogHeader*)ps_malloc(sizeof(LogHeader));
+      entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
+      if (entries && header) {
+        usePSRAM = true;
+        // PSRAM contents are lost on reset, so always initialize
+        Serial.print(F("Activity log using PSRAM ("));
+        Serial.print(MAX_ENTRIES);
+        Serial.print(F(" entries = "));
+        Serial.print((MAX_ENTRIES * sizeof(LogEntry)) / 1024);
+        Serial.println(F("KB, contents cleared on reboot)"));
+        header->magic = MAGIC_MARKER;
+        header->writeIndex = 0;
+        header->count = 0;
+        memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
+      }
+    }
+
+    if (!entries || !header) {
+      MAX_ENTRIES = MAX_ENTRIES_RAM;
+      header = new LogHeader;
+      entries = new LogEntry[MAX_ENTRIES];
+      header->magic = MAGIC_MARKER;
+      header->writeIndex = 0;
+      header->count = 0;
+      memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
+      Serial.print(F("Activity log using regular RAM ("));
+      Serial.print(MAX_ENTRIES);
+      Serial.println(F(" entries)"));
+    }
+  }
+
+  void log(const char* action, uint8_t target = 0, const char* detail = nullptr) {
+    if (!entries || !header) return;
+
+    LogEntry& entry = entries[header->writeIndex];
+    entry.timestamp = time(nullptr);
+    strlcpy(entry.action, action, sizeof(entry.action));
+    entry.target = target;
+    if (detail) {
+      strlcpy(entry.detail, detail, sizeof(entry.detail));
+    } else {
+      entry.detail[0] = 0;
+    }
+
+    header->writeIndex = (header->writeIndex + 1) % MAX_ENTRIES;
+    if (header->count < MAX_ENTRIES) header->count++;
+
+    // Broadcast this log entry to all WebSocket clients
+    broadcastLogEntry(entry);
+  }
+
+  // Helper for error logging - formats error with context
+  void logError(const char* errorType, uint8_t target = 0, const char* detail = nullptr) {
+    char action[32];
+    snprintf(action, sizeof(action), "error_%s", errorType);
+    log(action, target, detail);
+  }
+
+  void broadcastLogEntry(const LogEntry& entry) {
+    // External broadcast function will be called from main sketch
+    extern void broadcastLogToWebSocket(const struct LogEntry& entry);
+    broadcastLogToWebSocket(entry);
+  }
+
+  void getLog(JsonDocument& doc) {
+    if (!entries || !header) return;
+
+    JsonArray logs = doc.createNestedArray("log");
+
+    // Limit entries to prevent memory exhaustion
+    const uint16_t MAX_LOG_ENTRIES = 200;  // Limit response size
+    uint16_t entriesToSend = (header->count > MAX_LOG_ENTRIES) ? MAX_LOG_ENTRIES : header->count;
+
+    uint32_t startTime = millis();
+    const uint32_t MAX_PROCESSING_TIME = 5000;  // 5 second timeout
+
+    // Send entries in reverse order (newest first)
+    // The newest entry is at (writeIndex - 1), oldest at writeIndex (when buffer is full)
+    for (int16_t i = 0; i < entriesToSend; i++) {
+      // Feed watchdog every 5 entries and check timeout
+      if (i % 5 == 0) {
+        esp_task_wdt_reset();
+        // Timeout safety - bail out if taking too long
+        if (millis() - startTime > MAX_PROCESSING_TIME) {
+          Serial.printf("Log serialization timeout after %d entries\n", i);
+          break;
+        }
+      }
+
+      // Calculate index: start from most recent entry and go backwards
+      uint16_t idx = (header->writeIndex - 1 - i + MAX_ENTRIES) % MAX_ENTRIES;
+      JsonObject entry = logs.createNestedObject();
+
+      // Send raw Unix timestamp (UTC) - browser will convert to local timezone
+      entry["time"] = entries[idx].timestamp;
+
+      entry["action"] = entries[idx].action;
+      if (entries[idx].target > 0) entry["target"] = entries[idx].target;
+      if (strlen(entries[idx].detail) > 0) entry["detail"] = entries[idx].detail;
+    }
+
+    doc["count"] = header->count;
+    doc["entries_sent"] = entriesToSend;
+    doc["psram"] = usePSRAM;
+  }
+};
+
+extern ActivityLogger activityLogger;
+
 // ============================================
 // HUB CONTROLLER CLASS
 // ============================================
@@ -392,6 +550,10 @@ public:
           if (addr < 16) Serial.print("0");
           Serial.println(addr, HEX);
           deviceCount++;
+          
+          char addrStr[8];
+          snprintf(addrStr, sizeof(addrStr), "0x%02X", addr);
+          activityLogger.log("i2c_found", addr, addrStr);
         }
         delay(1); // Tiny delay between probes
       }
@@ -418,6 +580,10 @@ public:
             Serial.print(F("-"));
             Serial.print(i * PORTS_PER_HUB + PORTS_PER_HUB);
             Serial.println(F(")"));
+            
+            char hubLog[16];
+            snprintf(hubLog, sizeof(hubLog), "addr:0x%02X", HUB_ADDRESSES[i]);
+            activityLogger.log("hub_detected", i + 1, hubLog);
           }
         }
       }
@@ -437,6 +603,10 @@ public:
     Serial.print(F(" of "));
     Serial.print(MAX_HUBS);
     Serial.println(F(" configured hubs"));
+    
+    char hubCountStr[8];
+    snprintf(hubCountStr, sizeof(hubCountStr), "%d", numConnected);
+    activityLogger.log("hubs_found", numConnected, hubCountStr);
 
     // Build sequential port mapping based on discovered hubs
     totalAvailablePorts = 0;
@@ -915,162 +1085,6 @@ public:
 // ACTIVITY LOGGER CLASS
 // ============================================
 // LogEntry struct defined earlier with I2CHealth for global visibility
-
-class ActivityLogger {
-private:
-  static const uint16_t MAX_ENTRIES_RAM = 100;      // Regular RAM limit
-  static const uint16_t MAX_ENTRIES_PSRAM = 10000;  // PSRAM limit (~1.3MB, leaves room for other uses)
-
-  uint16_t MAX_ENTRIES;  // Actual max entries (set at init)
-
-  struct LogHeader {
-    uint32_t magic;
-    uint16_t writeIndex;
-    uint16_t count;
-  };
-
-  static const uint32_t MAGIC_MARKER = 0xDEADBEEF;
-  LogEntry* entries;
-  LogHeader* header;
-  bool usePSRAM;
-
-public:
-  ActivityLogger() : usePSRAM(false), entries(nullptr), header(nullptr), MAX_ENTRIES(MAX_ENTRIES_RAM) {}
-
-  void begin() {
-    // Note: PSRAM is volatile and loses contents on ANY reset (not just power loss)
-    // It's NOT persistent across reboots. Only deep sleep preserves PSRAM.
-    // For true persistence, we'd need to use flash storage (Preferences/LittleFS)
-
-    // Free existing allocations if begin() called multiple times
-    if (entries) {
-      if (usePSRAM) {
-        heap_caps_free(entries);
-        heap_caps_free(header);
-      } else {
-        delete[] entries;
-        delete header;
-      }
-      entries = nullptr;
-      header = nullptr;
-    }
-
-    // Check for PSRAM and allocate buffer
-    if (psramFound()) {
-      // Calculate max entries based on available PSRAM (use 75% to leave headroom)
-      size_t psramSize = ESP.getPsramSize();
-      size_t maxPsramForLog = (psramSize * 75) / 100;
-      uint16_t calculatedEntries = maxPsramForLog / sizeof(LogEntry);
-
-      // Cap at MAX_ENTRIES_PSRAM or calculated size, whichever is smaller
-      MAX_ENTRIES = (calculatedEntries < MAX_ENTRIES_PSRAM) ? calculatedEntries : MAX_ENTRIES_PSRAM;
-
-      header = (LogHeader*)ps_malloc(sizeof(LogHeader));
-      entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
-      if (entries && header) {
-        usePSRAM = true;
-        // PSRAM contents are lost on reset, so always initialize
-        Serial.print(F("Activity log using PSRAM ("));
-        Serial.print(MAX_ENTRIES);
-        Serial.print(F(" entries = "));
-        Serial.print((MAX_ENTRIES * sizeof(LogEntry)) / 1024);
-        Serial.println(F("KB, contents cleared on reboot)"));
-        header->magic = MAGIC_MARKER;
-        header->writeIndex = 0;
-        header->count = 0;
-        memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
-      }
-    }
-
-    if (!entries || !header) {
-      MAX_ENTRIES = MAX_ENTRIES_RAM;
-      header = new LogHeader;
-      entries = new LogEntry[MAX_ENTRIES];
-      header->magic = MAGIC_MARKER;
-      header->writeIndex = 0;
-      header->count = 0;
-      memset(entries, 0, sizeof(LogEntry) * MAX_ENTRIES);
-      Serial.print(F("Activity log using regular RAM ("));
-      Serial.print(MAX_ENTRIES);
-      Serial.println(F(" entries)"));
-    }
-  }
-
-  void log(const char* action, uint8_t target = 0, const char* detail = nullptr) {
-    if (!entries || !header) return;
-
-    LogEntry& entry = entries[header->writeIndex];
-    entry.timestamp = time(nullptr);
-    strlcpy(entry.action, action, sizeof(entry.action));
-    entry.target = target;
-    if (detail) {
-      strlcpy(entry.detail, detail, sizeof(entry.detail));
-    } else {
-      entry.detail[0] = 0;
-    }
-
-    header->writeIndex = (header->writeIndex + 1) % MAX_ENTRIES;
-    if (header->count < MAX_ENTRIES) header->count++;
-
-    // Broadcast this log entry to all WebSocket clients
-    broadcastLogEntry(entry);
-  }
-
-  // Helper for error logging - formats error with context
-  void logError(const char* errorType, uint8_t target = 0, const char* detail = nullptr) {
-    char action[32];
-    snprintf(action, sizeof(action), "error_%s", errorType);
-    log(action, target, detail);
-  }
-
-  void broadcastLogEntry(const LogEntry& entry) {
-    // External broadcast function will be called from main sketch
-    extern void broadcastLogToWebSocket(const struct LogEntry& entry);
-    broadcastLogToWebSocket(entry);
-  }
-
-  void getLog(JsonDocument& doc) {
-    if (!entries || !header) return;
-
-    JsonArray logs = doc.createNestedArray("log");
-
-    // Limit entries to prevent WDT timeout with large logs
-    const uint16_t MAX_LOG_ENTRIES = 1000;  // Limit response size
-    uint16_t entriesToSend = (header->count > MAX_LOG_ENTRIES) ? MAX_LOG_ENTRIES : header->count;
-
-    uint32_t startTime = millis();
-    const uint32_t MAX_PROCESSING_TIME = 5000;  // 5 second timeout
-
-    // Send entries in reverse order (newest first)
-    // The newest entry is at (writeIndex - 1), oldest at writeIndex (when buffer is full)
-    for (int16_t i = 0; i < entriesToSend; i++) {
-      // Feed watchdog every 5 entries and check timeout
-      if (i % 5 == 0) {
-        esp_task_wdt_reset();
-        // Timeout safety - bail out if taking too long
-        if (millis() - startTime > MAX_PROCESSING_TIME) {
-          Serial.printf("Log serialization timeout after %d entries\n", i);
-          break;
-        }
-      }
-
-      // Calculate index: start from most recent entry and go backwards
-      uint16_t idx = (header->writeIndex - 1 - i + MAX_ENTRIES) % MAX_ENTRIES;
-      JsonObject entry = logs.createNestedObject();
-
-      // Send raw Unix timestamp (UTC) - browser will convert to local timezone
-      entry["time"] = entries[idx].timestamp;
-
-      entry["action"] = entries[idx].action;
-      if (entries[idx].target > 0) entry["target"] = entries[idx].target;
-      if (strlen(entries[idx].detail) > 0) entry["detail"] = entries[idx].detail;
-    }
-
-    doc["count"] = header->count;
-    doc["entries_sent"] = entriesToSend;
-    doc["psram"] = usePSRAM;
-  }
-};
 
 // ============================================
 // PORT NAME MANAGER CLASS
@@ -1641,6 +1655,10 @@ public:
     // Status commands
     else if (strcmp(action, "status") == 0) {
       sendStatus();
+    }
+    else if (strcmp(action, "scan") == 0) {
+      hub->begin();
+      sendOK("I2C Scan complete");
     }
     else if (strcmp(action, "ping") == 0) {
       sendOK("pong");
@@ -2308,8 +2326,8 @@ void handleWebNotFound() {
 void handleWebStatus() {
   Serial.println(F("HTTP: Status API requested"));
   
-  // Use a larger buffer for the full status including hubs and ports
-  DynamicJsonDocument doc(4096);
+  // Use heap for large document
+  DynamicJsonDocument doc(8192); // 8KB buffer on heap
   doc["status"] = "ok";
   doc["uptime"] = millis();
   doc["systemname"] = configManager.getSystemName();
@@ -2791,6 +2809,33 @@ void logHubPortStatus() {
   }
 }
 
+// Recovery function for hung I2C bus
+void recoverI2CBus(uint8_t sda, uint8_t scl) {
+  Serial.println(F("Attempting I2C bus recovery..."));
+  pinMode(sda, INPUT_PULLUP);
+  pinMode(scl, OUTPUT);
+  digitalWrite(scl, HIGH);
+
+  // Pulse SCL 9 times to release any device stuck in a read
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(scl, LOW);
+    delayMicroseconds(5);
+    digitalWrite(scl, HIGH);
+    delayMicroseconds(5);
+  }
+
+  // Generate a STOP condition
+  pinMode(sda, OUTPUT);
+  digitalWrite(sda, LOW);
+  delayMicroseconds(5);
+  digitalWrite(scl, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(sda, HIGH);
+  delayMicroseconds(5);
+  
+  Serial.println(F("I2C bus recovery complete"));
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -2852,7 +2897,8 @@ void setup() {
     
     // Check if core dump exists
     esp_core_dump_summary_t summary;
-    if (esp_core_dump_get_summary(&summary) == ESP_OK) {
+    esp_err_t err = esp_core_dump_get_summary(&summary);
+    if (err == ESP_OK) {
         Serial.println(F("Core dump found!"));
         Serial.printf("  Exception cause: %d\n", summary.ex_info.exc_cause);
         Serial.printf("  PC: 0x%08x, Task: %s\n", summary.exc_pc, summary.exc_task);
@@ -2863,7 +2909,15 @@ void setup() {
                  summary.ex_info.exc_cause, summary.exc_pc, summary.exc_task);
         activityLogger.log("coredump_found", 0, detail);
     } else {
-        Serial.println(F("No core dump summary available."));
+        Serial.print(F("No core dump summary available ("));
+        Serial.print(err);
+        Serial.println(F(")"));
+        
+        if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
+          char errStr[16];
+          snprintf(errStr, sizeof(errStr), "err:0x%X", err);
+          activityLogger.log("coredump_missing", 0, errStr);
+        }
     }
     Serial.println();
   }
@@ -2907,18 +2961,25 @@ void setup() {
 
   // Give external components (like I2C hubs) time to power up if controlled by relay
   Serial.println(F("Stabilizing power..."));
-  delay(1000);
+  delay(2000); // Increased to 2s
   esp_task_wdt_reset();
 
   // Initialize components
   ledController.begin();
   ledController.flashActivity();
 
-  Serial.println(F("Initializing I2C..."));
+  Serial.print(F("Initializing I2C..."));
   Serial.print(F("  Using Wire (primary I2C) on pins SDA="));
   Serial.print(I2C_SDA);
   Serial.print(F(", SCL="));
   Serial.println(I2C_SCL);
+  
+  char pinsLog[16];
+  snprintf(pinsLog, sizeof(pinsLog), "SDA:%d SCL:%d", I2C_SDA, I2C_SCL);
+  activityLogger.log("i2c_init", 0, pinsLog);
+  
+  recoverI2CBus(I2C_SDA, I2C_SCL);
+  
   Wire.begin(I2C_SDA, I2C_SCL);
 
   // Set I2C timeout to 250ms to prevent indefinite blocking
@@ -2942,8 +3003,22 @@ void setup() {
     Serial.println(F("Hub controller ready"));
     ledController.setStatus(true);
   } else {
-    Serial.println(F("WARNING: No USB hubs found"));
-    ledController.errorPattern();
+    Serial.println(F("WARNING: No USB hubs found - attempting power cycle..."));
+    relayController.setState(false);
+    delay(2000);
+    esp_task_wdt_reset();
+    relayController.setState(true);
+    delay(2000);
+    esp_task_wdt_reset();
+    
+    if (hubController.begin()) {
+      Serial.println(F("Hub controller recovered after power cycle"));
+      ledController.setStatus(true);
+    } else {
+      Serial.println(F("CRITICAL: Hub controller still failed after power cycle"));
+      activityLogger.log("error_i2c_dead", 0, "Hubs unreachable");
+      ledController.errorPattern();
+    }
   }
 
   // Setup emergency stop button
@@ -2997,6 +3072,14 @@ void setup() {
       
       webServer.on("/", handleWebRoot);
       webServer.on("/status", handleWebStatus);
+      webServer.on("/log", HTTP_GET, []() {
+        // Use heap for large document to avoid stack overflow
+        DynamicJsonDocument doc(32768); // 32KB buffer
+        activityLogger.getLog(doc);
+        String response;
+        serializeJson(doc, response);
+        webServer.send(200, "application/json", response);
+      });
       webServer.on("/version", handleWebVersion);
       webServer.on("/reset", handleWebReset);
       webServer.on("/update", HTTP_GET, handleWebUpdate);

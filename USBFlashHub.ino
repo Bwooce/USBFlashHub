@@ -1010,6 +1010,7 @@ private:
     char mdnsName[32];
     char systemName[16];  // System/UI name, max 15 chars
     bool wifiEnabled;
+    bool persistentLogging; // Store crash reason in NVS
   } config;
 
 public:
@@ -1017,6 +1018,7 @@ public:
     strcpy(config.mdnsName, "usbhub");  // Default
     strcpy(config.systemName, "USBFlashHub");  // Default UI name
     config.wifiEnabled = false;
+    config.persistentLogging = true;
   }
 
   void begin() {
@@ -1030,6 +1032,7 @@ public:
     prefs.getString("mdns", config.mdnsName, sizeof(config.mdnsName));
     prefs.getString("sysname", config.systemName, sizeof(config.systemName));
     config.wifiEnabled = prefs.getBool("wifi_en", false);
+    config.persistentLogging = prefs.getBool("perslog", true);
 
     if (strlen(config.mdnsName) == 0) {
       strcpy(config.mdnsName, "usbhub");
@@ -1045,6 +1048,12 @@ public:
     prefs.putString("mdns", config.mdnsName);
     prefs.putString("sysname", config.systemName);
     prefs.putBool("wifi_en", config.wifiEnabled);
+    prefs.putBool("perslog", config.persistentLogging);
+  }
+
+  void setPersistentLogging(bool enable) {
+    config.persistentLogging = enable;
+    saveConfig();
   }
 
   void setWiFi(const char* ssid, const char* pass, bool enable) {
@@ -1077,12 +1086,14 @@ public:
   const char* getMDNS() { return config.mdnsName; }
   const char* getSystemName() { return config.systemName; }
   bool isWiFiEnabled() { return config.wifiEnabled; }
+  bool isPersistentLogging() { return config.persistentLogging; }
 
   void getConfig(JsonDocument& doc) {
     doc["wifi"]["ssid"] = config.wifiSSID;
     doc["wifi"]["enabled"] = config.wifiEnabled;
     doc["mdns"] = config.mdnsName;
     doc["systemname"] = config.systemName;
+    doc["persistent_logging"] = config.persistentLogging;
   }
 };
 
@@ -1908,6 +1919,11 @@ private:
       config->setMDNS(name);
       logger->log("mdns_config", 0, name);
       sendOK("mDNS name saved. Restart to apply.");
+    } else if (cmd.containsKey("logging")) {
+      bool enable = cmd["logging"];
+      config->setPersistentLogging(enable);
+      logger->log("logging_toggle", enable);
+      sendOK(enable ? "Persistent logging enabled" : "Persistent logging disabled");
     } else {
       // Return current config
       response.clear();
@@ -2349,6 +2365,7 @@ void handleWebStatus() {
   system["restart_reason"] = restartReason;
   system["restart_time"] = restartTime;
   system["is_updating"] = isUpdating;
+  system["persistent_logging"] = configManager.isPersistentLogging();
   
   // Add persistent crash info if it exists
   Preferences crashPrefs;
@@ -2922,10 +2939,13 @@ void setup() {
   if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
     Serial.println(F("\n*** WARNING: Previous session ended with crash/watchdog reset! ***"));
     
-    // Store crash reason in NVS for persistence
+    // Check if persistent logging is enabled
+    bool storeInNVS = configManager.isPersistentLogging();
     Preferences crashPrefs;
-    crashPrefs.begin("crash", false);
-    crashPrefs.putString("last_reason", restartReason);
+    if (storeInNVS) {
+      crashPrefs.begin("crash", false);
+      crashPrefs.putString("last_reason", restartReason);
+    }
     
     // Check if core dump exists
     esp_core_dump_summary_t summary;
@@ -2940,7 +2960,7 @@ void setup() {
         snprintf(detail, sizeof(detail), "cause:%d PC:0x%08x task:%s", 
                  summary.ex_info.exc_cause, summary.exc_pc, summary.exc_task);
         activityLogger.log("coredump_found", 0, detail);
-        crashPrefs.putString("last_detail", detail);
+        if (storeInNVS) crashPrefs.putString("last_detail", detail);
     } else {
         Serial.print(F("No core dump summary available ("));
         Serial.print(err);
@@ -2950,10 +2970,10 @@ void setup() {
           char errStr[16];
           snprintf(errStr, sizeof(errStr), "err:0x%X", err);
           activityLogger.log("coredump_missing", 0, errStr);
-          crashPrefs.putString("last_detail", errStr);
+          if (storeInNVS) crashPrefs.putString("last_detail", errStr);
         }
     }
-    crashPrefs.end();
+    if (storeInNVS) crashPrefs.end();
     Serial.println();
   }
 

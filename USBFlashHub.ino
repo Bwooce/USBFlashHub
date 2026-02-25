@@ -538,6 +538,12 @@ public:
       Serial.print(4 - scanAttempts);
       Serial.println(F(")..."));
       
+      // Re-initialize Wire on retry
+      if (scanAttempts < 3) {
+        Wire.begin(I2C_SDA, I2C_SCL);
+        delay(100);
+      }
+
       deviceCount = 0;
       for (uint8_t addr = 1; addr < 127; addr++) {
         // Feed watchdog periodically during scan
@@ -645,35 +651,29 @@ public:
 
     uint8_t addr = HUB_ADDRESSES[hubIndex];
 
-    // PCA9557 Register Map (I2C GPIO Expander):
-    //   0x00: Input Port (read-only) - reflects pin states
-    //   0x01: Output Port (R/W) - controls output pins
-    //   0x02: Polarity Inversion (R/W) - inverts input readings
-    //   0x03: Configuration (R/W) - sets pin direction (1=input, 0=output)
+    // Use a single transaction to set registers 0x01, 0x02, and 0x03
+    // PCA9557 auto-increments the register pointer.
+    wire->beginTransmission(addr);
+    wire->write(0x01); // Start at Output Port Register
+    wire->write(0x00); // 0x01: Output Port = all LOW (All Ports OFF)
+    wire->write(0x00); // 0x02: Polarity Inversion = none
+    wire->write(0x00); // 0x03: Configuration = all OUTPUT
+    uint8_t error = wire->endTransmission();
 
-    // Set the Output Port Register to 0 (All Ports OFF) FIRST
-    // This ensures that when the pins switch to outputs, they drive LOW immediately.
-    if (!writeI2CRegister(addr, 0x01, 0x00)) {
+    if (error != 0) {
+       char errDetail[16];
+       snprintf(errDetail, sizeof(errDetail), "E:%d at R01-03", error);
+       activityLogger.log("hub_init_err", hubIndex + 1, errDetail);
        return false; 
     }
 
-    // Set Configuration Register (all pins as outputs) - with retry
-    if (!writeI2CRegister(addr, 0x03, 0x00)) {
-      return false;  // Failed to configure
+    // Now set the initial operational state (LED on, high power mode)
+    // Bit 0: Current limit (0=high power), Bit 3: LED (1=on)
+    hubStates[hubIndex] = 0x08; 
+    if (!writeI2CRegister(addr, 0x01, hubStates[hubIndex])) {
+       activityLogger.log("hub_init_err", hubIndex + 1, "R01_final_fail");
+       return false;
     }
-
-    // Set Polarity Inversion Register (disable inversion) - with retry
-    writeI2CRegister(addr, 0x02, 0x00);  // Non-critical if fails
-
-    // Set Output Control Register with initial state
-    // Bit 0: Current limit control (1=low power, 0=high power) - controls MT9700 SET pin resistor
-    // Bit 1: USB-C VBUS Path (1=connected, 0=isolated) - links USB-C VBUS to main 5V rail
-    //        This path allows the USB-C port to supply the hub or be powered by it.
-    //        WARNING: Avoid cross-connecting 5V from header and USB-C.
-    // Bit 3: LED control (1=on, 0=off) - default to on for visibility
-    // Bits 4-7: Port control (1=on, 0=off) - individual port enable/disable
-    hubStates[hubIndex] = 0x08;  // Bit 0 clear for high power, bit 1 isolated, bit 3 set for LED on
-    writeI2CRegister(addr, 0x01, hubStates[hubIndex]);  // with retry
 
     return true;
   }
@@ -942,6 +942,11 @@ private:
       if (error == 0) {
         i2cHealth.recordSuccess();
         return true;
+      }
+
+      if (Serial) {
+        Serial.print(F("  I2C err: "));
+        Serial.println(error);
       }
 
       // Feed watchdog after failed I2C operation
@@ -2345,6 +2350,16 @@ void handleWebStatus() {
   system["restart_time"] = restartTime;
   system["is_updating"] = isUpdating;
   
+  // Add persistent crash info if it exists
+  Preferences crashPrefs;
+  if (crashPrefs.begin("crash", true)) {
+    if (crashPrefs.isKey("last_reason")) {
+      system["last_crash_reason"] = crashPrefs.getString("last_reason");
+      system["last_crash_detail"] = crashPrefs.getString("last_detail");
+    }
+    crashPrefs.end();
+  }
+  
   #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
     system["temperature"] = temperatureRead();
   #endif
@@ -2850,6 +2865,15 @@ void setup() {
   Serial.println(F(BOARD_TYPE));
   Serial.println(F("=====================================\n"));
 
+  esp_task_wdt_reset();    // Feed the watchdog
+  Serial.println(F("OK"));
+
+  // Initialize configuration and logger FIRST so we can record crash info
+  configManager.begin();
+  activityLogger.begin();
+  portNameManager.begin();
+  relayController.begin();
+
   // Get and log restart reason
   restartTime = millis();
   esp_reset_reason_t resetReason = esp_reset_reason();
@@ -2891,9 +2915,17 @@ void setup() {
   Serial.print(F("Restart reason: "));
   Serial.println(restartReason);
 
+  // Log the restart to activity log
+  activityLogger.log("system_restart", 0, restartReason.c_str());
+
   // Check for crash/panic info
   if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
     Serial.println(F("\n*** WARNING: Previous session ended with crash/watchdog reset! ***"));
+    
+    // Store crash reason in NVS for persistence
+    Preferences crashPrefs;
+    crashPrefs.begin("crash", false);
+    crashPrefs.putString("last_reason", restartReason);
     
     // Check if core dump exists
     esp_core_dump_summary_t summary;
@@ -2908,6 +2940,7 @@ void setup() {
         snprintf(detail, sizeof(detail), "cause:%d PC:0x%08x task:%s", 
                  summary.ex_info.exc_cause, summary.exc_pc, summary.exc_task);
         activityLogger.log("coredump_found", 0, detail);
+        crashPrefs.putString("last_detail", detail);
     } else {
         Serial.print(F("No core dump summary available ("));
         Serial.print(err);
@@ -2917,45 +2950,12 @@ void setup() {
           char errStr[16];
           snprintf(errStr, sizeof(errStr), "err:0x%X", err);
           activityLogger.log("coredump_missing", 0, errStr);
+          crashPrefs.putString("last_detail", errStr);
         }
     }
+    crashPrefs.end();
     Serial.println();
   }
-
-  // Initialize watchdog timer
-  Serial.print(F("Initializing watchdog ("));
-  Serial.print(WDT_TIMEOUT);
-  Serial.print(F("s)... "));
-
-#if defined(CONFIG_IDF_TARGET_ESP32C3)
-  // ESP32-C3 uses simplified watchdog config (single core)
-  esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = WDT_TIMEOUT * 1000,
-    .idle_core_mask = 1,  // Single core for C3
-    .trigger_panic = true
-  };
-#else
-  // Multi-core ESP32 variants
-  esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = WDT_TIMEOUT * 1000,
-    .idle_core_mask = 0,
-    .trigger_panic = true
-  };
-#endif
-
-  esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL);  // Add current task to WDT
-  esp_task_wdt_reset();    // Feed the watchdog
-  Serial.println(F("OK"));
-
-  // Initialize configuration first
-  configManager.begin();
-  activityLogger.begin();
-  portNameManager.begin();
-  relayController.begin();
-
-  // Log the restart
-  activityLogger.log("system_restart", 0, restartReason.c_str());
 
   esp_task_wdt_reset();  // Feed watchdog
 
@@ -2978,8 +2978,6 @@ void setup() {
   snprintf(pinsLog, sizeof(pinsLog), "SDA:%d SCL:%d", I2C_SDA, I2C_SCL);
   activityLogger.log("i2c_init", 0, pinsLog);
   
-  recoverI2CBus(I2C_SDA, I2C_SCL);
-  
   Wire.begin(I2C_SDA, I2C_SCL);
 
   // Set I2C timeout to 250ms to prevent indefinite blocking
@@ -2991,6 +2989,8 @@ void setup() {
   // If you need external pull-ups, add 4.7kΩ resistors from 3.3V to SDA/SCL
 
   Serial.println(F("  I2C initialized"));
+  Wire.setClock(100000); 
+  Serial.println(F("  I2C clock set to 100kHz"));
 
   pinController.begin();
 

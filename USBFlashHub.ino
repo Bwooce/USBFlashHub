@@ -116,6 +116,7 @@
 #include <LittleFS.h>
 #include <Update.h>
 #include <esp_core_dump.h>
+#include <ESPIoTLog.h>
 
 // RGB LED support for S3-Zero
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -333,6 +334,7 @@ struct LogEntry {
 
 // Forward declare global error logging function
 void logError(const char* errorType, uint8_t target, const char* detail);
+void recoverI2CBus(uint8_t sda, uint8_t scl);
 
 class ActivityLogger {
 private:
@@ -378,10 +380,10 @@ public:
       // Calculate max entries based on available PSRAM (use 75% to leave headroom)
       size_t psramSize = ESP.getPsramSize();
       size_t maxPsramForLog = (psramSize * 75) / 100;
-      uint16_t calculatedEntries = maxPsramForLog / sizeof(LogEntry);
+      size_t calculatedEntries = maxPsramForLog / sizeof(LogEntry);
 
       // Cap at MAX_ENTRIES_PSRAM or calculated size, whichever is smaller
-      MAX_ENTRIES = (calculatedEntries < MAX_ENTRIES_PSRAM) ? calculatedEntries : MAX_ENTRIES_PSRAM;
+      MAX_ENTRIES = (calculatedEntries < MAX_ENTRIES_PSRAM) ? (uint16_t)calculatedEntries : MAX_ENTRIES_PSRAM;
 
       header = (LogHeader*)ps_malloc(sizeof(LogHeader));
       entries = (LogEntry*)ps_malloc(sizeof(LogEntry) * MAX_ENTRIES);
@@ -429,6 +431,13 @@ public:
 
     header->writeIndex = (header->writeIndex + 1) % MAX_ENTRIES;
     if (header->count < MAX_ENTRIES) header->count++;
+
+    // Log to ESPIoTLog if available
+    if (detail && strlen(detail) > 0) {
+      iotlog.info("[%s] target:%d detail:%s", action, target, detail);
+    } else {
+      iotlog.info("[%s] target:%d", action, target);
+    }
 
     // Broadcast this log entry to all WebSocket clients
     broadcastLogEntry(entry);
@@ -540,6 +549,7 @@ public:
       
       // Re-initialize Wire on retry
       if (scanAttempts < 3) {
+        recoverI2CBus(I2C_SDA, I2C_SCL);
         Wire.begin(I2C_SDA, I2C_SCL);
         delay(100);
       }
@@ -1260,7 +1270,7 @@ public:
 
     if (WiFi.status() == WL_CONNECTED) {
       connected = true;
-      Serial.println(F("\n✓ WiFi Connected!"));
+      Serial.println(F("\n✓ WiFi Connected."));
       Serial.print(F("  IP Address: "));
       Serial.println(WiFi.localIP());
       Serial.print(F("  Subnet Mask: "));
@@ -2455,7 +2465,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
         // Special handling for status command - send full response
         const char* action = cmd["cmd"];
         if (strcmp(action, "status") == 0) {
-          StaticJsonDocument<4096> status;
+          DynamicJsonDocument status(4096);
           status["status"] = "ok";
           status["uptime"] = millis();
 
@@ -2542,7 +2552,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 
           // Check for buffer overflow
           if (status.overflowed()) {
-            Serial.println(F("ERROR: Status JSON buffer overflow!"));
+            Serial.println(F("ERROR: Status JSON buffer overflow."));
             StaticJsonDocument<256> error;
             error["status"] = "error";
             error["msg"] = "Status response too large";
@@ -2554,7 +2564,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           }
         } else if (strcmp(action, "log") == 0) {
           // Log command - send activity log
-          StaticJsonDocument<2048> logResponse;
+          DynamicJsonDocument logResponse(32768);
           logResponse["status"] = "ok";
           activityLogger.getLog(logResponse);
 
@@ -2650,7 +2660,7 @@ void broadcastStatus() {
   // Feed watchdog before potentially long operation
   esp_task_wdt_reset();
 
-  StaticJsonDocument<4096> doc;
+  DynamicJsonDocument doc(4096);
 
   // Add full hub information (getStatus creates the "hubs" array)
   hubController.getStatus(doc);
@@ -2937,7 +2947,7 @@ void setup() {
 
   // Check for crash/panic info
   if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
-    Serial.println(F("\n*** WARNING: Previous session ended with crash/watchdog reset! ***"));
+    Serial.println(F("\n*** WARNING: Previous session ended with crash/watchdog reset ***"));
     
     // Check if persistent logging is enabled
     bool storeInNVS = configManager.isPersistentLogging();
@@ -2947,30 +2957,36 @@ void setup() {
       crashPrefs.putString("last_reason", restartReason);
     }
     
-    // Check if core dump exists
-    esp_core_dump_summary_t summary;
-    esp_err_t err = esp_core_dump_get_summary(&summary);
-    if (err == ESP_OK) {
-        Serial.println(F("Core dump found!"));
-        Serial.printf("  Exception cause: %d\n", summary.ex_info.exc_cause);
-        Serial.printf("  PC: 0x%08x, Task: %s\n", summary.exc_pc, summary.exc_task);
-        Serial.printf("  Core dump version: %d\n", summary.core_dump_version);
-        
+    // Check for crash data from ESPIoTLog handler
+    CrashData crash;
+    if (ESPCrashHandler::getCrashData(crash)) {
         char detail[64];
-        snprintf(detail, sizeof(detail), "cause:%d PC:0x%08x task:%s", 
-                 summary.ex_info.exc_cause, summary.exc_pc, summary.exc_task);
-        activityLogger.log("coredump_found", 0, detail);
+        snprintf(detail, sizeof(detail), "type:%d reason:%d PC:0x%08x", 
+                 crash.crash_type, crash.reset_reason, crash.pc);
+        activityLogger.log("crash_detected", 0, detail);
         if (storeInNVS) crashPrefs.putString("last_detail", detail);
-    } else {
-        Serial.print(F("No core dump summary available ("));
-        Serial.print(err);
-        Serial.println(F(")"));
         
-        if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
-          char errStr[16];
-          snprintf(errStr, sizeof(errStr), "err:0x%X", err);
-          activityLogger.log("coredump_missing", 0, errStr);
-          if (storeInNVS) crashPrefs.putString("last_detail", errStr);
+        Serial.println(F("Crash data found in RTC memory."));
+        Serial.printf("  Type: %d, Reason: %d\n", crash.crash_type, crash.reset_reason);
+        Serial.printf("  PC: 0x%08x, Function: %s\n", crash.pc, crash.last_function);
+    } 
+    // Fallback to core dump summary if SDK supports it
+    else {
+        esp_core_dump_summary_t summary;
+        esp_err_t err = esp_core_dump_get_summary(&summary);
+        if (err == ESP_OK) {
+            char detail[64];
+            snprintf(detail, sizeof(detail), "cause:%d PC:0x%08x task:%s", 
+                     summary.ex_info.exc_cause, summary.exc_pc, summary.exc_task);
+            activityLogger.log("coredump_found", 0, detail);
+            if (storeInNVS) crashPrefs.putString("last_detail", detail);
+        } else {
+            if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT) {
+              char errStr[16];
+              snprintf(errStr, sizeof(errStr), "err:0x%X", err);
+              activityLogger.log("crash_missing", 0, errStr);
+              if (storeInNVS) crashPrefs.putString("last_detail", errStr);
+            }
         }
     }
     if (storeInNVS) crashPrefs.end();
@@ -3018,6 +3034,10 @@ void setup() {
   esp_task_wdt_reset();  // Feed watchdog before network init
   wifiManager.begin();
   esp_task_wdt_reset();  // Feed watchdog after network init
+  
+  // Initialize remote logging (requires WiFi for mDNS/UDP)
+  iotlog.begin(configManager.getSystemName());
+  iotlog.enableCrashLogging(true);
 
   if (hubController.begin()) {
     Serial.println(F("Hub controller ready"));
@@ -3136,6 +3156,7 @@ void loop() {
   // Handle web server updates (blocks other processing)
   if (isUpdating) {
     wifiManager.loop(); // Keep WiFi alive
+    iotlog.loop();      // Keep remote logging alive
     webServer.handleClient();
     delay(1);
     return;
@@ -3148,9 +3169,12 @@ void loop() {
   // Log if loop is taking too long (>5 seconds between iterations)
   if (lastLoopTime > 0 && (loopStart - lastLoopTime) > 5000) {
     Serial.printf("WARNING: Loop blocked for %lu ms at operation: %s\n",
-                  loopStart - lastLoopTime, lastOperation);
+                  (unsigned long)(loopStart - lastLoopTime), lastOperation);
   }
   lastLoopTime = loopStart;
+
+  // Background processing
+  iotlog.loop();
 
   // Network reconnect handler
   lastOperation = "wifi";
@@ -3164,7 +3188,7 @@ void loop() {
     emergencyStopFlag = false;
     emergencyActive = true;
     emergencyStartTime = millis();
-    Serial.println(F("\n!!! EMERGENCY STOP !!!"));
+    Serial.println(F("\nEMERGENCY STOP"));
     hubController.allOff();
     relayController.setState(false); // Turn off external 5V relay
     pinController.setReset(true);
